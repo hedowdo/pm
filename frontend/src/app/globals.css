@@ -1,0 +1,59 @@
+@import "tailwindcss";
+
+:root {
+  --accent-yellow: #ecad0a;
+  --primary-blue: #209dd7;
+  --secondary-purple: #753991;
+  --navy: #032147;
+  --muted: #888888;
+  --paper: #fcfbf7;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-width: 320px;
+  background: var(--paper);
+}
+
+body {
+  min-height: 100vh;
+  margin: 0;
+  color: var(--navy);
+  background:
+    radial-gradient(circle at 10% 2%, rgb(236 173 10 / 14%), transparent 25rem),
+    radial-gradient(circle at 95% 5%, rgb(32 157 215 / 12%), transparent 26rem),
+    var(--paper);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+::selection {
+  color: white;
+  background: var(--secondary-purple);
+}
+
+.editorial-title {
+  font-family: Georgia, "Times New Roman", serif;
+}
+
+.board-scroll::-webkit-scrollbar {
+  height: 10px;
+}
+
+.board-scroll::-webkit-scrollbar-thumb {
+  border: 3px solid var(--paper);
+  border-radius: 999px;
+  background: rgb(3 33 71 / 26%);
+}

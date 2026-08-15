@@ -174,3 +174,17 @@ cython_debug/
 
 .DS_Store
 
+# Project runtime and generated files
+data/
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+backend/.venv/
+backend/.pytest_cache/
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/playwright-report/
+frontend/test-results/
+
