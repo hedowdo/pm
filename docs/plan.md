@@ -1,6 +1,6 @@
 # Project Management MVP Implementation Plan
 
-Status: Part 4 complete and verified; Part 5 has not started  
+Status: Part 6 complete and verified; Part 7 has not started  
 Last updated: 2026-08-15
 
 ## Plan rules
@@ -58,7 +58,7 @@ Excluded:
 
 - The demo lives in the canonical `frontend/` directory; Part 2 preserved and verified its source-file inventory during the rename from `front end/`.
 - This plan is canonical at `docs/plan.md`; documentation uses Linux-safe casing.
-- `backend/` contains the Part 2 FastAPI scaffold, uv project/lockfile, temporary static page, and focused tests.
+- `backend/` contains the authenticated FastAPI application, approved Part 6 SQLite board store, uv project/lockfile, static-site serving, and focused tests.
 - The repository contains the Part 2 Dockerfile, Compose file, environment example, ignore rules, cross-platform scripts, and minimal root README.
 - Docker Desktop 4.85.0 is installed with Docker Engine 29.6.2 and Docker Compose 5.3.1; the Part 2 image, container, scripts, persistence, and secret-isolation checks pass.
 - `.env` is ignored and contains the expected OpenRouter variable name. Its value must remain private.
@@ -294,39 +294,47 @@ This two-table design matches the existing frontend shape, enforces one board pe
 
 ### Work checklist
 
-- [ ] Review the current `BoardState`, fixed column IDs, seed data, card fields, and array-order behavior.
-- [ ] Define IDs, SQLite types, nullability, the user foreign key, and the one-board-per-user uniqueness rule.
-- [ ] Define the canonical `BoardState` JSON shape and API representation.
-- [ ] Require exactly the five fixed column IDs in their fixed order, with non-empty renameable titles.
-- [ ] Require unique non-empty card IDs, non-empty card titles, string details, and a valid fixed `columnId` for every card.
-- [ ] Preserve card order directly through the ordered `cards[]` array.
-- [ ] Define Pydantic validation on every database read and before every write.
-- [ ] Define idempotent creation of a new database, hardcoded user, and initial board state.
-- [ ] Define ownership lookup from the authenticated username and atomic replacement of one user's board row.
-- [ ] Save the machine-readable table and `BoardState` proposal as `docs/database-schema.json`.
-- [ ] Document rationale, initialization, validation, persistence, ownership, transactions, and API mapping in `docs/database.md`.
-- [ ] Document why JSON state is sufficient for this single-board MVP and when future requirements would justify normalized card rows.
-- [ ] Include worked JSON examples for rename, card creation/edit/deletion, same-column reorder, cross-column movement, multi-operation AI change, and a second user.
-- [ ] Do not implement database code during this design part.
-- [ ] Obtain explicit user approval of the schema before Part 6.
+- [x] Review the current `BoardState`, fixed column IDs, seed data, card fields, and array-order behavior.
+- [x] Define IDs, SQLite types, nullability, the user foreign key, and the one-board-per-user uniqueness rule.
+- [x] Define the canonical `BoardState` JSON shape and API representation.
+- [x] Require exactly the five fixed column IDs in their fixed order, with non-empty renameable titles.
+- [x] Require unique non-empty card IDs, non-empty card titles, string details, and a valid fixed `columnId` for every card.
+- [x] Preserve card order directly through the ordered `cards[]` array.
+- [x] Define Pydantic validation on every database read and before every write.
+- [x] Define idempotent creation of a new database, hardcoded user, and initial board state.
+- [x] Define ownership lookup from the authenticated username and atomic replacement of one user's board row.
+- [x] Save the machine-readable table and `BoardState` proposal as `docs/database-schema.json`.
+- [x] Document rationale, initialization, validation, persistence, ownership, transactions, and API mapping in `docs/database.md`.
+- [x] Document why JSON state is sufficient for this single-board MVP and when future requirements would justify normalized card rows.
+- [x] Include worked JSON examples for rename, card creation/edit/deletion, same-column reorder, cross-column movement, multi-operation AI change, and a second user.
+- [x] Do not implement database code during this design part.
+- [x] Obtain explicit user approval of the schema before Part 6.
+
+### Part 5 verification record
+
+- The machine-readable proposal parses as valid JSON, and its complete seed state exactly matches the frontend `initialBoardState`.
+- The seed plus all 8 worked result states pass the canonical validation rules; all 9 intentionally invalid states are rejected.
+- Automated consistency checks confirm `docs/database-schema.json` and `docs/database.md` declare the same two tables, fields, ownership boundary, API routes, fixed columns, transaction model, and exclusion of chat storage.
+- An in-memory SQLite 3.46.1 probe in the Python 3.14 target image successfully created the exact proposed tables and proved idempotent initialization, one board per user, foreign-key enforcement, JSON validity, rollback behavior, a single atomic AI-result commit, and isolation of a second user's board.
+- No backend, frontend, container, or database implementation file was changed during Part 5.
 
 ### Tests
 
-- [ ] Parse `docs/database-schema.json` as valid JSON.
-- [ ] Confirm the JSON proposal and `docs/database.md` declare the same tables, fields, keys, ownership rule, and board validation rules.
-- [ ] Validate the seeded board and every worked valid example against the proposed `BoardState` definition.
-- [ ] Reject examples with missing/extra/reordered fixed columns, duplicate IDs, unknown column references, blank titles, malformed cards, or non-array ordering.
-- [ ] Walk a multi-operation AI update through one proposed board-row transaction.
-- [ ] Confirm two users have independent board rows and cannot select or replace each other's state.
-- [ ] Confirm no chat-history table or field exists.
+- [x] Parse `docs/database-schema.json` as valid JSON.
+- [x] Confirm the JSON proposal and `docs/database.md` declare the same tables, fields, keys, ownership rule, and board validation rules.
+- [x] Validate the seeded board and every worked valid example against the proposed `BoardState` definition.
+- [x] Reject examples with missing/extra/reordered fixed columns, duplicate IDs, unknown column references, blank titles, malformed cards, or non-array ordering.
+- [x] Walk a multi-operation AI update through one proposed board-row transaction.
+- [x] Confirm two users have independent board rows and cannot select or replace each other's state.
+- [x] Confirm no chat-history table or field exists.
 
 ### Success criteria
 
-- [ ] The proposal represents every existing board behavior in the current `BoardState` shape.
-- [ ] One board per user is enforced while multiple user rows remain possible.
-- [ ] Manual and multi-operation AI writes are unambiguously atomic.
-- [ ] The JSON proposal and explanation agree.
-- [ ] The user explicitly approves the schema.
+- [x] The proposal represents every existing board behavior in the current `BoardState` shape.
+- [x] One board per user is enforced while multiple user rows remain possible.
+- [x] Manual and multi-operation AI writes are unambiguously atomic.
+- [x] The JSON proposal and explanation agree.
+- [x] The user explicitly approves the schema.
 
 ## Part 6: Persistent board backend
 
@@ -334,40 +342,48 @@ Goal: make FastAPI the authenticated, durable source of truth for the user's com
 
 ### Work checklist
 
-- [ ] Implement the approved two-table SQLite schema with the Python standard-library `sqlite3` module unless Part 5 evidence requires a different choice.
-- [ ] Open a short-lived connection per unit of work, enable foreign keys, and wrap board replacement in an explicit transaction.
-- [ ] Create the database and schema automatically when the configured file is absent.
-- [ ] Seed the hardcoded user and one initial board idempotently without overwriting an existing board.
-- [ ] Resolve board ownership only from the authenticated session username.
-- [ ] Add strict Pydantic models for the canonical `BoardState` shape.
-- [ ] Implement authenticated `GET /api/board` returning the user's validated board.
-- [ ] Implement authenticated `PUT /api/board` validating and atomically replacing the user's complete board.
-- [ ] Serialize only the validated canonical model into `state_json` and validate it again when loading from SQLite.
-- [ ] Reject missing, extra, duplicated, or reordered fixed columns; blank column/card titles; duplicate card IDs; malformed details; and unknown card-column references.
-- [ ] Return the authoritative full board after a successful `PUT`.
-- [ ] Keep board load, validation, pure operations, and atomic persistence in small reusable functions so Part 9 can update the same state without calling an HTTP route internally.
-- [ ] Return concise 400, 401, and 500 errors without exposing database internals or invalid stored JSON.
+- [x] Implement the approved two-table SQLite schema with the Python standard-library `sqlite3` module unless Part 5 evidence requires a different choice.
+- [x] Open a short-lived connection per unit of work, enable foreign keys, and wrap board replacement in an explicit transaction.
+- [x] Create the database and schema automatically when the configured file is absent.
+- [x] Seed the hardcoded user and one initial board idempotently without overwriting an existing board.
+- [x] Resolve board ownership only from the authenticated session username.
+- [x] Add strict Pydantic models for the canonical `BoardState` shape.
+- [x] Implement authenticated `GET /api/board` returning the user's validated board.
+- [x] Implement authenticated `PUT /api/board` validating and atomically replacing the user's complete board.
+- [x] Serialize only the validated canonical model into `state_json` and validate it again when loading from SQLite.
+- [x] Reject missing, extra, duplicated, or reordered fixed columns; blank column/card titles; duplicate card IDs; malformed details; and unknown card-column references.
+- [x] Return the authoritative full board after a successful `PUT`.
+- [x] Keep board load, validation, pure operations, and atomic persistence in small reusable functions so Part 9 can update the same state without calling an HTTP route internally.
+- [x] Return concise 400, 401, and 500 errors without exposing database internals or invalid stored JSON.
+
+### Part 6 verification record
+
+- Backend: all 13 tests passed in the locked Python 3.14 container environment. Coverage includes schema creation, exact seed data, idempotent initialization, canonical whole-board replacement, every required mutation shape, invalid-state atomicity, authentication, second-user isolation, reopen persistence, and concise invalid-storage handling.
+- Frontend regression: all 13 Vitest tests passed, lint passed, TypeScript passed, and the static production build completed successfully.
+- Container: the rebuilt service is healthy at `http://localhost:8000`, automatically created `data/kanban.db`, and served authenticated `GET /api/board` and `PUT /api/board` successfully.
+- Persistence: a temporary board rename survived complete container removal and recreation through the `./data:/data` bind mount. The old in-memory session was correctly rejected with 401 after restart, a new login read the persisted change, and the original board was restored afterward.
+- Browser regression: the single container-backed Playwright authentication and Kanban workflow passed after the backend/database changes.
 
 ### Tests
 
-- [ ] Create a database from an empty temporary path and verify both tables and seed rows.
-- [ ] Run initialization twice and prove it is idempotent.
-- [ ] Test authenticated `GET` and valid atomic `PUT`.
-- [ ] Use valid whole-board states to cover column rename, card create/edit/delete, same-column reorder, cross-column move, and move into an empty column.
-- [ ] Test trimmed required titles, optional details, exact fixed columns/order, unique card IDs, and valid card-column references.
-- [ ] Test every invalid-board case and prove the stored JSON remains byte-for-byte unchanged after rejection.
-- [ ] Insert a second test user and prove complete read/write isolation.
-- [ ] Close and reopen the SQLite file and prove board changes persist and validate.
-- [ ] Run API tests with and without authentication.
-- [ ] Recreate the container while retaining `data/` and prove the board remains unchanged.
+- [x] Create a database from an empty temporary path and verify both tables and seed rows.
+- [x] Run initialization twice and prove it is idempotent.
+- [x] Test authenticated `GET` and valid atomic `PUT`.
+- [x] Use valid whole-board states to cover column rename, card create/edit/delete, same-column reorder, cross-column move, and move into an empty column.
+- [x] Test trimmed required titles, optional details, exact fixed columns/order, unique card IDs, and valid card-column references.
+- [x] Test every invalid-board case and prove the stored JSON remains byte-for-byte unchanged after rejection.
+- [x] Insert a second test user and prove complete read/write isolation.
+- [x] Close and reopen the SQLite file and prove board changes persist and validate.
+- [x] Run API tests with and without authentication.
+- [x] Recreate the container while retaining `data/` and prove the board remains unchanged.
 
 ### Success criteria
 
-- [ ] A missing database initializes automatically with the expected user and board.
-- [ ] `GET /api/board` and `PUT /api/board` are the complete, documented manual board contract.
-- [ ] Invalid replacements are atomic and do not alter stored state.
-- [ ] Data survives API process and container restarts.
-- [ ] The API never accepts a browser-supplied user identity.
+- [x] A missing database initializes automatically with the expected user and board.
+- [x] `GET /api/board` and `PUT /api/board` are the complete, documented manual board contract.
+- [x] Invalid replacements are atomic and do not alter stored state.
+- [x] Data survives API process and container restarts.
+- [x] The API never accepts a browser-supplied user identity.
 
 ## Part 7: Frontend and backend integration
 

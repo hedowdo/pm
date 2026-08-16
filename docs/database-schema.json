@@ -1,0 +1,450 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kanban-studio.local/schemas/board-state.json",
+  "title": "Kanban Studio BoardState",
+  "$ref": "#/$defs/BoardState",
+  "x-sqlite": {
+    "foreignKeys": true,
+    "tables": [
+      {
+        "name": "users",
+        "columns": [
+          { "name": "id", "type": "INTEGER", "nullable": false, "primaryKey": true },
+          { "name": "username", "type": "TEXT", "nullable": false }
+        ],
+        "constraints": [
+          { "type": "unique", "columns": ["username"] },
+          { "type": "check", "expression": "length(trim(username)) > 0" }
+        ]
+      },
+      {
+        "name": "boards",
+        "columns": [
+          { "name": "id", "type": "INTEGER", "nullable": false, "primaryKey": true },
+          { "name": "user_id", "type": "INTEGER", "nullable": false },
+          { "name": "state_json", "type": "TEXT", "nullable": false }
+        ],
+        "constraints": [
+          { "type": "unique", "columns": ["user_id"] },
+          {
+            "type": "foreignKey",
+            "columns": ["user_id"],
+            "references": { "table": "users", "columns": ["id"] },
+            "onDelete": "CASCADE"
+          },
+          { "type": "check", "expression": "json_valid(state_json)" }
+        ]
+      }
+    ],
+    "createSql": [
+      "PRAGMA foreign_keys = ON",
+      "CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, username TEXT NOT NULL UNIQUE CHECK (length(trim(username)) > 0))",
+      "CREATE TABLE IF NOT EXISTS boards (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE, state_json TEXT NOT NULL CHECK (json_valid(state_json)))"
+    ],
+    "initialization": [
+      "Insert username 'user' with INSERT OR IGNORE",
+      "Select that user's id",
+      "Insert the seed BoardState with INSERT OR IGNORE so an existing board is never overwritten"
+    ],
+    "ownership": {
+      "source": "authenticated session username",
+      "read": "Join boards to users and filter by users.username",
+      "replace": "Update boards.state_json through the user id selected by username",
+      "browserSuppliedIdentityAllowed": false
+    },
+    "replacementTransaction": [
+      "Validate and canonicalize the complete BoardState before opening the write transaction",
+      "BEGIN IMMEDIATE",
+      "Update exactly one board selected through the authenticated username",
+      "COMMIT on success; ROLLBACK on any error"
+    ]
+  },
+  "x-api": {
+    "get": {
+      "method": "GET",
+      "path": "/api/board",
+      "authentication": "required",
+      "response": "BoardState"
+    },
+    "replace": {
+      "method": "PUT",
+      "path": "/api/board",
+      "authentication": "required",
+      "request": "BoardState",
+      "response": "canonical persisted BoardState"
+    },
+    "identityInput": "none"
+  },
+  "x-validationInvariants": [
+    "Reject unknown fields at every object level",
+    "Require the five fixed columns exactly once and in the declared order",
+    "Trim column titles, card ids, card titles, and card details before persistence",
+    "Reject blank column titles, card ids, and card titles after trimming",
+    "Require unique card ids",
+    "Require every card columnId to reference a fixed column",
+    "Validate after every database read and before every database write"
+  ],
+  "x-seed": {
+    "user": { "id": 1, "username": "user" },
+    "board": {
+      "id": 1,
+      "userId": 1,
+      "state": {
+        "columns": [
+          { "id": "ideas", "title": "Ideas" },
+          { "id": "todo", "title": "To Do" },
+          { "id": "in-progress", "title": "In Progress" },
+          { "id": "review", "title": "Review" },
+          { "id": "done", "title": "Done" }
+        ],
+        "cards": [
+          { "id": "card-brief", "title": "Share project brief", "details": "Give the team a crisp starting point for the launch sprint.", "columnId": "ideas" },
+          { "id": "card-kickoff", "title": "Schedule project kickoff", "details": "Find a time that brings design, product, and engineering together.", "columnId": "ideas" },
+          { "id": "card-audience", "title": "Map the launch audience", "details": "Turn our customer notes into a focused audience snapshot.", "columnId": "todo" },
+          { "id": "card-story", "title": "Outline campaign story", "details": "Shape the narrative before the visual system takes over.", "columnId": "todo" },
+          { "id": "card-homepage", "title": "Design homepage concepts", "details": "Explore two confident directions for the new hero section.", "columnId": "in-progress" },
+          { "id": "card-copy", "title": "Polish launch copy", "details": "Make the first message clear, concise, and worth sharing.", "columnId": "review" },
+          { "id": "card-qa", "title": "Review sign-up flow", "details": "Check the complete path from the hero button to confirmation.", "columnId": "review" },
+          { "id": "card-demo", "title": "Demo the new board", "details": "Walk the team through the first version and gather reactions.", "columnId": "done" }
+        ]
+      }
+    }
+  },
+  "x-workedExamples": [
+    {
+      "name": "rename column",
+      "operation": { "kind": "renameColumn", "columnId": "ideas", "title": "Discovery" },
+      "state": {
+        "columns": [
+          { "id": "ideas", "title": "Discovery" },
+          { "id": "todo", "title": "To Do" },
+          { "id": "in-progress", "title": "In Progress" },
+          { "id": "review", "title": "Review" },
+          { "id": "done", "title": "Done" }
+        ],
+        "cards": []
+      }
+    },
+    {
+      "name": "create card",
+      "operation": { "kind": "createCard", "card": { "id": "card-new", "title": "Prepare update", "details": "", "columnId": "ideas" } },
+      "state": {
+        "columns": [
+          { "id": "ideas", "title": "Ideas" },
+          { "id": "todo", "title": "To Do" },
+          { "id": "in-progress", "title": "In Progress" },
+          { "id": "review", "title": "Review" },
+          { "id": "done", "title": "Done" }
+        ],
+        "cards": [
+          { "id": "card-new", "title": "Prepare update", "details": "", "columnId": "ideas" }
+        ]
+      }
+    },
+    {
+      "name": "edit card",
+      "operation": { "kind": "editCard", "cardId": "card-one", "title": "Publish update", "details": "Include decisions." },
+      "state": {
+        "columns": [
+          { "id": "ideas", "title": "Ideas" },
+          { "id": "todo", "title": "To Do" },
+          { "id": "in-progress", "title": "In Progress" },
+          { "id": "review", "title": "Review" },
+          { "id": "done", "title": "Done" }
+        ],
+        "cards": [
+          { "id": "card-one", "title": "Publish update", "details": "Include decisions.", "columnId": "todo" }
+        ]
+      }
+    },
+    {
+      "name": "delete card",
+      "operation": { "kind": "deleteCard", "cardId": "card-one" },
+      "state": {
+        "columns": [
+          { "id": "ideas", "title": "Ideas" },
+          { "id": "todo", "title": "To Do" },
+          { "id": "in-progress", "title": "In Progress" },
+          { "id": "review", "title": "Review" },
+          { "id": "done", "title": "Done" }
+        ],
+        "cards": []
+      }
+    },
+    {
+      "name": "same-column reorder",
+      "operation": { "kind": "reorderCard", "cardId": "card-b", "beforeCardId": "card-a" },
+      "state": {
+        "columns": [
+          { "id": "ideas", "title": "Ideas" },
+          { "id": "todo", "title": "To Do" },
+          { "id": "in-progress", "title": "In Progress" },
+          { "id": "review", "title": "Review" },
+          { "id": "done", "title": "Done" }
+        ],
+        "cards": [
+          { "id": "card-b", "title": "Second card", "details": "", "columnId": "todo" },
+          { "id": "card-a", "title": "First card", "details": "", "columnId": "todo" }
+        ]
+      }
+    },
+    {
+      "name": "cross-column move",
+      "operation": { "kind": "moveCard", "cardId": "card-move", "columnId": "review", "afterCardId": "card-review" },
+      "state": {
+        "columns": [
+          { "id": "ideas", "title": "Ideas" },
+          { "id": "todo", "title": "To Do" },
+          { "id": "in-progress", "title": "In Progress" },
+          { "id": "review", "title": "Review" },
+          { "id": "done", "title": "Done" }
+        ],
+        "cards": [
+          { "id": "card-review", "title": "Existing review", "details": "", "columnId": "review" },
+          { "id": "card-move", "title": "Moved card", "details": "", "columnId": "review" }
+        ]
+      }
+    },
+    {
+      "name": "multi-operation AI change",
+      "operations": [
+        { "kind": "editCard", "cardId": "card-launch", "title": "Publish launch notes", "details": "Approved." },
+        { "kind": "moveCard", "cardId": "card-launch", "columnId": "done" },
+        { "kind": "createCard", "card": { "id": "card-ai-brief", "title": "Draft follow-up", "details": "Summarize responses.", "columnId": "todo" } }
+      ],
+      "state": {
+        "columns": [
+          { "id": "ideas", "title": "Ideas" },
+          { "id": "todo", "title": "To Do" },
+          { "id": "in-progress", "title": "In Progress" },
+          { "id": "review", "title": "Review" },
+          { "id": "done", "title": "Done" }
+        ],
+        "cards": [
+          { "id": "card-ai-brief", "title": "Draft follow-up", "details": "Summarize responses.", "columnId": "todo" },
+          { "id": "card-launch", "title": "Publish launch notes", "details": "Approved.", "columnId": "done" }
+        ]
+      }
+    },
+    {
+      "name": "independent second user",
+      "operation": { "kind": "createUserBoard", "username": "designer" },
+      "state": {
+        "columns": [
+          { "id": "ideas", "title": "Concepts" },
+          { "id": "todo", "title": "Queued" },
+          { "id": "in-progress", "title": "Designing" },
+          { "id": "review", "title": "Critique" },
+          { "id": "done", "title": "Shipped" }
+        ],
+        "cards": [
+          { "id": "designer-card", "title": "Explore visual direction", "details": "Independent from user 1.", "columnId": "ideas" }
+        ]
+      }
+    }
+  ],
+  "x-invalidExamples": [
+    {
+      "name": "missing fixed column",
+      "state": {
+        "columns": [
+          { "id": "ideas", "title": "Ideas" },
+          { "id": "todo", "title": "To Do" },
+          { "id": "in-progress", "title": "In Progress" },
+          { "id": "review", "title": "Review" }
+        ],
+        "cards": []
+      }
+    },
+    {
+      "name": "extra fixed column",
+      "state": {
+        "columns": [
+          { "id": "ideas", "title": "Ideas" },
+          { "id": "todo", "title": "To Do" },
+          { "id": "in-progress", "title": "In Progress" },
+          { "id": "review", "title": "Review" },
+          { "id": "done", "title": "Done" },
+          { "id": "archive", "title": "Archive" }
+        ],
+        "cards": []
+      }
+    },
+    {
+      "name": "reordered fixed columns",
+      "state": {
+        "columns": [
+          { "id": "todo", "title": "To Do" },
+          { "id": "ideas", "title": "Ideas" },
+          { "id": "in-progress", "title": "In Progress" },
+          { "id": "review", "title": "Review" },
+          { "id": "done", "title": "Done" }
+        ],
+        "cards": []
+      }
+    },
+    {
+      "name": "duplicate card ids",
+      "state": {
+        "columns": [
+          { "id": "ideas", "title": "Ideas" },
+          { "id": "todo", "title": "To Do" },
+          { "id": "in-progress", "title": "In Progress" },
+          { "id": "review", "title": "Review" },
+          { "id": "done", "title": "Done" }
+        ],
+        "cards": [
+          { "id": "duplicate", "title": "One", "details": "", "columnId": "ideas" },
+          { "id": "duplicate", "title": "Two", "details": "", "columnId": "todo" }
+        ]
+      }
+    },
+    {
+      "name": "unknown card column",
+      "state": {
+        "columns": [
+          { "id": "ideas", "title": "Ideas" },
+          { "id": "todo", "title": "To Do" },
+          { "id": "in-progress", "title": "In Progress" },
+          { "id": "review", "title": "Review" },
+          { "id": "done", "title": "Done" }
+        ],
+        "cards": [
+          { "id": "card-one", "title": "Invalid location", "details": "", "columnId": "archive" }
+        ]
+      }
+    },
+    {
+      "name": "blank title",
+      "state": {
+        "columns": [
+          { "id": "ideas", "title": "   " },
+          { "id": "todo", "title": "To Do" },
+          { "id": "in-progress", "title": "In Progress" },
+          { "id": "review", "title": "Review" },
+          { "id": "done", "title": "Done" }
+        ],
+        "cards": []
+      }
+    },
+    {
+      "name": "malformed card",
+      "state": {
+        "columns": [
+          { "id": "ideas", "title": "Ideas" },
+          { "id": "todo", "title": "To Do" },
+          { "id": "in-progress", "title": "In Progress" },
+          { "id": "review", "title": "Review" },
+          { "id": "done", "title": "Done" }
+        ],
+        "cards": [
+          { "id": "   ", "title": "   ", "details": "", "columnId": "ideas" }
+        ]
+      }
+    },
+    {
+      "name": "missing card field",
+      "state": {
+        "columns": [
+          { "id": "ideas", "title": "Ideas" },
+          { "id": "todo", "title": "To Do" },
+          { "id": "in-progress", "title": "In Progress" },
+          { "id": "review", "title": "Review" },
+          { "id": "done", "title": "Done" }
+        ],
+        "cards": [
+          { "id": "card-one", "title": "Missing details", "columnId": "ideas" }
+        ]
+      }
+    },
+    {
+      "name": "non-array card ordering",
+      "state": {
+        "columns": [
+          { "id": "ideas", "title": "Ideas" },
+          { "id": "todo", "title": "To Do" },
+          { "id": "in-progress", "title": "In Progress" },
+          { "id": "review", "title": "Review" },
+          { "id": "done", "title": "Done" }
+        ],
+        "cards": { "card-one": { "title": "Wrong shape", "details": "", "columnId": "ideas" } }
+      }
+    }
+  ],
+  "$defs": {
+    "ColumnId": {
+      "type": "string",
+      "enum": ["ideas", "todo", "in-progress", "review", "done"]
+    },
+    "BoardColumn": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title"],
+      "properties": {
+        "id": { "$ref": "#/$defs/ColumnId" },
+        "title": { "type": "string", "pattern": "\\S" }
+      }
+    },
+    "KanbanCard": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "details", "columnId"],
+      "properties": {
+        "id": { "type": "string", "pattern": "\\S" },
+        "title": { "type": "string", "pattern": "\\S" },
+        "details": { "type": "string" },
+        "columnId": { "$ref": "#/$defs/ColumnId" }
+      }
+    },
+    "BoardState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["columns", "cards"],
+      "properties": {
+        "columns": {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "prefixItems": [
+            {
+              "allOf": [
+                { "$ref": "#/$defs/BoardColumn" },
+                { "properties": { "id": { "const": "ideas" } } }
+              ]
+            },
+            {
+              "allOf": [
+                { "$ref": "#/$defs/BoardColumn" },
+                { "properties": { "id": { "const": "todo" } } }
+              ]
+            },
+            {
+              "allOf": [
+                { "$ref": "#/$defs/BoardColumn" },
+                { "properties": { "id": { "const": "in-progress" } } }
+              ]
+            },
+            {
+              "allOf": [
+                { "$ref": "#/$defs/BoardColumn" },
+                { "properties": { "id": { "const": "review" } } }
+              ]
+            },
+            {
+              "allOf": [
+                { "$ref": "#/$defs/BoardColumn" },
+                { "properties": { "id": { "const": "done" } } }
+              ]
+            }
+          ],
+          "items": false
+        },
+        "cards": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/KanbanCard" },
+          "x-uniqueBy": "id"
+        }
+      }
+    }
+  }
+}

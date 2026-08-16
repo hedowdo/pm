@@ -1,14 +1,22 @@
+import os
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from secrets import compare_digest, token_urlsafe
+from typing import Annotated
 
-from fastapi import FastAPI, HTTPException, Request, Response, status
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from app.database import BoardStoreError, initialize_database, load_board, replace_board
+from app.models import BoardState
+
 
 STATIC_DIR = Path(__file__).parent / "static"
+DATABASE_PATH = Path(os.environ.get("DATABASE_PATH", "/data/kanban.db"))
 API_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"]
 SESSION_COOKIE = "kanban_session"
 MVP_USERNAME = "user"
@@ -20,13 +28,23 @@ class LoginCredentials(BaseModel):
     password: str
 
 
-def create_app(static_dir: Path = STATIC_DIR) -> FastAPI:
+def create_app(
+    static_dir: Path = STATIC_DIR,
+    database_path: Path = DATABASE_PATH,
+) -> FastAPI:
     sessions: dict[str, str] = {}
+
+    @asynccontextmanager
+    async def lifespan(_application: FastAPI) -> AsyncIterator[None]:
+        initialize_database(database_path)
+        yield
+
     application = FastAPI(
         title="Project Management MVP",
         docs_url="/api/docs",
         openapi_url="/api/openapi.json",
         redoc_url=None,
+        lifespan=lifespan,
     )
 
     @application.exception_handler(RequestValidationError)
@@ -61,11 +79,7 @@ def create_app(static_dir: Path = STATIC_DIR) -> FastAPI:
 
     @application.get("/api/auth/me")
     def current_user(request: Request) -> dict[str, str]:
-        session_id = request.cookies.get(SESSION_COOKIE)
-        username = sessions.get(session_id) if session_id else None
-        if username is None:
-            raise HTTPException(status_code=401, detail="Not authenticated")
-        return {"username": username}
+        return {"username": require_user(request)}
 
     @application.post("/api/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
     def logout(request: Request, response: Response) -> None:
@@ -79,6 +93,29 @@ def create_app(static_dir: Path = STATIC_DIR) -> FastAPI:
             secure=False,
             path="/",
         )
+
+    def require_user(request: Request) -> str:
+        session_id = request.cookies.get(SESSION_COOKIE)
+        username = sessions.get(session_id) if session_id else None
+        if username is None:
+            raise HTTPException(status_code=401, detail="Not authenticated")
+        return username
+
+    CurrentUsername = Annotated[str, Depends(require_user)]
+
+    @application.get("/api/board", response_model=BoardState)
+    def get_board(username: CurrentUsername) -> BoardState:
+        try:
+            return load_board(database_path, username)
+        except BoardStoreError:
+            raise HTTPException(status_code=500, detail="Board is unavailable") from None
+
+    @application.put("/api/board", response_model=BoardState)
+    def put_board(board: BoardState, username: CurrentUsername) -> BoardState:
+        try:
+            return replace_board(database_path, username, board)
+        except BoardStoreError:
+            raise HTTPException(status_code=500, detail="Board could not be saved") from None
 
     @application.api_route("/api", methods=API_METHODS, include_in_schema=False)
     @application.api_route("/api/{path:path}", methods=API_METHODS, include_in_schema=False)

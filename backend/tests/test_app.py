@@ -1,26 +1,6 @@
-from pathlib import Path
-
-import pytest
 from fastapi.testclient import TestClient
 
-from app.main import SESSION_COOKIE, create_app
-
-
-@pytest.fixture
-def client(tmp_path: Path) -> TestClient:
-    (tmp_path / "index.html").write_text(
-        '<!doctype html><html><body><h1>Kanban Studio</h1><script src="/_next/static/app.js"></script></body></html>',
-        encoding="utf-8",
-    )
-    (tmp_path / "404.html").write_text(
-        "<!doctype html><html><body>Page not found</body></html>",
-        encoding="utf-8",
-    )
-    asset_dir = tmp_path / "_next" / "static"
-    asset_dir.mkdir(parents=True)
-    (asset_dir / "app.js").write_text("globalThis.kanbanLoaded = true;", encoding="utf-8")
-
-    return TestClient(create_app(tmp_path))
+from app.main import SESSION_COOKIE
 
 
 def test_health(client: TestClient) -> None:
