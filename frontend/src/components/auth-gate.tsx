@@ -8,6 +8,7 @@ import {
   logout,
   type SessionUser,
 } from "@/lib/auth";
+import { clearChatHistory } from "@/lib/chat";
 
 type AuthState =
   | { status: "loading" }
@@ -56,6 +57,7 @@ export function AuthGate() {
     setIsPending(true);
     try {
       await logout();
+      clearChatHistory();
       setAuth({ status: "signed-out" });
     } catch (logoutError) {
       setError(messageFrom(logoutError));

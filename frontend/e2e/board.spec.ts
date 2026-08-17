@@ -1,5 +1,11 @@
 import { expect, test, type Page } from "@playwright/test";
-import { initialBoardState, type BoardState } from "../src/lib/board";
+import { initialBoardState, moveCard, type BoardState } from "../src/lib/board";
+import { CHAT_HISTORY_KEY, type ChatMessage } from "../src/lib/chat";
+
+type ObservedChatRequest = {
+  message: string;
+  history: ChatMessage[];
+};
 
 async function waitForBoardSave(page: Page, action: () => Promise<void>) {
   const responsePromise = page.waitForResponse(
@@ -24,6 +30,116 @@ async function replaceBoard(page: Page, board: BoardState) {
   expect(status).toBe(200);
 }
 
+async function installDeterministicChat(page: Page) {
+  const observed: ObservedChatRequest[] = [];
+
+  await page.route("**/api/chat", async (route) => {
+    const request = route.request().postDataJSON() as ObservedChatRequest;
+    observed.push(request);
+
+    if (request.message === "Fail safely") {
+      await route.fulfill({
+        status: 503,
+        json: { detail: "AI service is temporarily busy" },
+      });
+      return;
+    }
+
+    const boardUrl = new URL("/api/board", page.url()).toString();
+    const currentResponse = await page.request.get(boardUrl);
+    expect(currentResponse.ok()).toBe(true);
+    let board = (await currentResponse.json()) as BoardState;
+    let assistantMessage = "The board is ready.";
+    const appliedOperations: Array<{
+      type: "create_card" | "edit_card" | "move_card";
+      cardId: string;
+    }> = [];
+
+    if (request.message === "Create an AI test card in To Do") {
+      board = {
+        ...board,
+        cards: [
+          ...board.cards,
+          {
+            id: "card-ai-created",
+            title: "AI test card",
+            details: "Created through the assistant.",
+            columnId: "todo",
+          },
+        ],
+      };
+      assistantMessage = "I created the AI test card in To Do.";
+      appliedOperations.push({ type: "create_card", cardId: "card-ai-created" });
+    } else if (request.message === "Edit the project brief") {
+      board = {
+        ...board,
+        cards: board.cards.map((card) =>
+          card.id === "card-brief"
+            ? { ...card, title: "AI revised project brief" }
+            : card,
+        ),
+      };
+      assistantMessage = "I revised the project brief.";
+      appliedOperations.push({ type: "edit_card", cardId: "card-brief" });
+    } else if (request.message === "Move the campaign story to Done") {
+      board = moveCard(board, "card-story", "done");
+      assistantMessage = "I moved the campaign story to Done.";
+      appliedOperations.push({ type: "move_card", cardId: "card-story" });
+    } else if (request.message === "Update two cards") {
+      board = {
+        ...board,
+        cards: board.cards.map((card) => {
+          if (card.id === "card-kickoff") {
+            return { ...card, title: "Confirm project kickoff" };
+          }
+          if (card.id === "card-qa") {
+            return { ...card, title: "Complete sign-up review" };
+          }
+          return card;
+        }),
+      };
+      assistantMessage = "I updated both cards.";
+      appliedOperations.push(
+        { type: "edit_card", cardId: "card-kickoff" },
+        { type: "edit_card", cardId: "card-qa" },
+      );
+    } else if (request.message === "Summarize this board") {
+      assistantMessage = "Work is spread across all five stages.";
+    }
+
+    const savedResponse = await page.request.put(boardUrl, { data: board });
+    expect(savedResponse.ok()).toBe(true);
+    const authoritative = (await savedResponse.json()) as BoardState;
+
+    await route.fulfill({
+      status: 200,
+      json: {
+        message: assistantMessage,
+        appliedOperations,
+        board: authoritative,
+      },
+    });
+  });
+
+  return observed;
+}
+
+async function sendChatMessage(
+  page: Page,
+  message: string,
+  expectedReply: string,
+) {
+  const responsePromise = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/api/chat") && response.request().method() === "POST",
+  );
+  const input = page.getByLabel("Message the board assistant");
+  await input.fill(message);
+  await page.getByRole("button", { name: "Send message" }).click();
+  expect((await responsePromise).ok()).toBe(true);
+  await expect(page.getByText(expectedReply)).toBeVisible();
+}
+
 test("persists the complete Kanban workflow through the backend", async ({ page }) => {
   await page.goto("/");
 
@@ -41,6 +157,7 @@ test("persists the complete Kanban workflow through the backend", async ({ page 
     const response = await fetch("/api/board", { credentials: "same-origin" });
     return response.json() as Promise<BoardState>;
   });
+  const observedChatRequests = await installDeterministicChat(page);
 
   try {
     await replaceBoard(page, initialBoardState);
@@ -130,10 +247,99 @@ test("persists the complete Kanban workflow through the backend", async ({ page 
     expect(
       await page.evaluate(() => window.localStorage.getItem("kanban-mvp.board.v1")),
     ).toBeNull();
+
+    await page.setViewportSize({ width: 1720, height: 900 });
+    await expect(page.getByLabel("Message the board assistant")).toBeVisible();
+
+    await sendChatMessage(
+      page,
+      "Create an AI test card in To Do",
+      "I created the AI test card in To Do.",
+    );
+    await expect(page.getByTestId("column-todo").getByText("AI test card")).toBeVisible();
+    expect(
+      await page.evaluate((key) => window.sessionStorage.getItem(key), CHAT_HISTORY_KEY),
+    ).not.toBeNull();
+
+    await page.reload();
+    await expect(page.getByTestId("column-todo").getByText("AI test card")).toBeVisible();
+    await expect(page.getByText("I created the AI test card in To Do.")).toBeVisible();
+
+    await sendChatMessage(
+      page,
+      "Edit the project brief",
+      "I revised the project brief.",
+    );
+    await expect(page.getByText("AI revised project brief")).toBeVisible();
+
+    await sendChatMessage(
+      page,
+      "Move the campaign story to Done",
+      "I moved the campaign story to Done.",
+    );
+    await expect(
+      page.getByTestId("column-done").getByText("Outline campaign story"),
+    ).toBeVisible();
+
+    await sendChatMessage(page, "Update two cards", "I updated both cards.");
+    await expect(page.getByText("Confirm project kickoff")).toBeVisible();
+    await expect(page.getByText("Complete sign-up review")).toBeVisible();
+
+    await sendChatMessage(
+      page,
+      "Summarize this board",
+      "Work is spread across all five stages.",
+    );
+    expect(observedChatRequests[0].history).toEqual([]);
+    expect(observedChatRequests.at(-1)?.history).toEqual(
+      expect.arrayContaining([
+        { role: "user", content: "Create an AI test card in To Do" },
+        {
+          role: "assistant",
+          content: "I created the AI test card in To Do.",
+        },
+      ]),
+    );
+
+    const beforeFailure = await page.evaluate(async () => {
+      const response = await fetch("/api/board", { credentials: "same-origin" });
+      return response.json() as Promise<BoardState>;
+    });
+    const failedResponse = page.waitForResponse(
+      (response) =>
+        response.url().endsWith("/api/chat") && response.status() === 503,
+    );
+    await page.getByLabel("Message the board assistant").fill("Fail safely");
+    await page.getByRole("button", { name: "Send message" }).click();
+    await failedResponse;
+    await expect(
+      page
+        .getByRole("complementary", { name: "AI assistant" })
+        .getByRole("alert"),
+    ).toHaveText("AI service is temporarily busy");
+    await expect(page.getByLabel("Message the board assistant")).toHaveValue("Fail safely");
+    const afterFailure = await page.evaluate(async () => {
+      const response = await fetch("/api/board", { credentials: "same-origin" });
+      return response.json() as Promise<BoardState>;
+    });
+    expect(afterFailure).toEqual(beforeFailure);
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    const openChat = page.getByRole("button", { name: "Open AI chat" });
+    await expect(openChat).toBeVisible();
+    await openChat.click();
+    await expect(page.getByRole("dialog", { name: "Plan with AI" })).toBeVisible();
+    await expect(page.getByLabel("Message the board assistant")).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("dialog", { name: "Plan with AI" })).toHaveCount(0);
+    await expect(openChat).toBeFocused();
   } finally {
     await replaceBoard(page, originalBoard);
   }
 
   await page.getByRole("button", { name: "Sign out" }).click();
   await expect(page.getByRole("region", { name: "Kanban board" })).toHaveCount(0);
+  expect(
+    await page.evaluate((key) => window.sessionStorage.getItem(key), CHAT_HISTORY_KEY),
+  ).toBeNull();
 });

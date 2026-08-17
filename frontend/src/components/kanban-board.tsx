@@ -29,6 +29,7 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useReducer, useState } from "react";
+import { AiChat, useDesktopChat } from "@/components/ai-chat";
 import { BoardApiError, getBoard, saveBoard } from "@/lib/board-api";
 import {
   boardReducer,
@@ -140,8 +141,10 @@ function BoardWorkspace({
   const [editor, setEditor] = useState<Editor | null>(null);
   const [activeCardId, setActiveCardId] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [isChatSending, setIsChatSending] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [recoveryRequired, setRecoveryRequired] = useState(false);
+  const isDesktopChat = useDesktopChat();
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
@@ -154,12 +157,12 @@ function BoardWorkspace({
   const activeCard = board.cards.find((card) => card.id === activeCardId);
 
   function handleDragStart({ active }: DragStartEvent) {
-    if (isSaving || recoveryRequired) return;
+    if (isSaving || isChatSending || recoveryRequired) return;
     setActiveCardId(String(active.id));
   }
 
   function handleDragEnd({ active, over }: DragEndEvent) {
-    if (over && !isSaving && !recoveryRequired) {
+    if (over && !isSaving && !isChatSending && !recoveryRequired) {
       void applyAction({
         type: "moveCard",
         activeId: String(active.id),
@@ -196,7 +199,7 @@ function BoardWorkspace({
   }
 
   async function applyAction(action: BoardAction) {
-    if (isSaving || recoveryRequired) return;
+    if (isSaving || isChatSending || recoveryRequired) return;
     const previousBoard = board;
     const nextBoard = boardReducer(board, action);
     dispatch({ type: "replace", state: nextBoard });
@@ -248,11 +251,19 @@ function BoardWorkspace({
     }
   }
 
-  const interactionsDisabled = isSaving || recoveryRequired;
+  const interactionsDisabled = isSaving || isChatSending || recoveryRequired;
 
   return (
     <main className="min-h-screen px-5 py-6 sm:px-8 lg:px-12 lg:py-10">
-      <div className="mx-auto max-w-[1720px]">
+      <div
+        data-testid="board-layout"
+        className={`mx-auto max-w-[1880px] ${
+          isDesktopChat
+            ? "grid grid-cols-[minmax(0,1fr)_360px] items-start gap-6"
+            : ""
+        }`}
+      >
+        <div className="min-w-0">
         <header className="mb-8 flex flex-col gap-5 sm:mb-10 sm:flex-row sm:items-end sm:justify-between">
           <div>
             <div className="mb-4 flex items-center gap-3 text-[11px] font-bold tracking-[0.22em] text-[#753991]">
@@ -270,7 +281,7 @@ function BoardWorkspace({
               </p>
               <button
                 type="button"
-                disabled={isLoggingOut || isSaving}
+                disabled={isLoggingOut || isSaving || isChatSending}
                 onClick={onLogout}
                 className="flex items-center gap-2 rounded-xl border border-[#032147]/15 bg-white/70 px-4 py-2.5 text-sm font-bold text-[#032147] transition hover:border-[#753991] hover:text-[#753991] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#753991] disabled:cursor-wait disabled:opacity-60"
               >
@@ -340,6 +351,17 @@ function BoardWorkspace({
             {activeCard ? <DraggedCardPreview card={activeCard} /> : null}
           </DragOverlay>
         </DndContext>
+        </div>
+
+        <AiChat
+          disabled={isSaving || recoveryRequired}
+          isDesktop={isDesktopChat}
+          onBoardReplace={(authoritative) =>
+            dispatch({ type: "replace", state: authoritative })
+          }
+          onSendingChange={setIsChatSending}
+          onUnauthorized={onUnauthorized}
+        />
       </div>
 
       <CardEditorDialog
@@ -574,7 +596,6 @@ function KanbanCard({
     <article
       ref={setNodeRef}
       data-testid="kanban-card"
-      onClick={() => !disabled && onClick()}
       style={{
         transform: CSS.Transform.toString(transform),
         transition,
@@ -583,11 +604,24 @@ function KanbanCard({
         isDragging ? "z-20 scale-[0.98] opacity-25 shadow-none" : ""
       }`}
     >
-      <div className="mb-3 flex items-start gap-2">
-        <span className="mt-1 h-2 w-2 shrink-0 rounded-full bg-[#ecad0a]" />
-        <h3 className="min-w-0 flex-1 text-[15px] leading-5 font-bold tracking-[-0.018em] text-[#032147]">
-          {card.title}
-        </h3>
+      <div className="flex items-start gap-2">
+        <button
+          type="button"
+          disabled={disabled}
+          aria-label={`Edit ${card.title}`}
+          onClick={onClick}
+          className="flex min-w-0 flex-1 items-start gap-2 text-left focus-visible:rounded-lg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#209dd7] disabled:cursor-wait"
+        >
+          <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-[#ecad0a]" />
+          <span className="min-w-0 flex-1">
+            <h3 className="text-[15px] leading-5 font-bold tracking-[-0.018em] text-[#032147]">
+              {card.title}
+            </h3>
+            <p className="mt-3 line-clamp-3 text-[13px] leading-5 text-[#888888]">
+              {card.details}
+            </p>
+          </span>
+        </button>
         <button
           type="button"
           disabled={disabled}
@@ -600,7 +634,6 @@ function KanbanCard({
           <GripVertical size={16} strokeWidth={2.3} />
         </button>
       </div>
-      <p className="line-clamp-3 text-[13px] leading-5 text-[#888888]">{card.details}</p>
     </article>
   );
 }

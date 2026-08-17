@@ -1,6 +1,6 @@
 # Project Management MVP Implementation Plan
 
-Status: Part 8 complete and verified; Part 9 has not started
+Status: Parts 1-10 complete and verified; MVP definition of done achieved
 Last updated: 2026-08-17
 
 ## Plan rules
@@ -37,7 +37,11 @@ Last updated: 2026-08-17
 - AI conversation history is kept only in browser `sessionStorage`, survives a refresh in the same tab, and is cleared on logout. It is never stored in SQLite.
 - The backend loads the authoritative board before every AI request. The browser does not provide the authoritative board snapshot.
 - OpenRouter calls use exactly `openai/gpt-oss-20b:free`. A different model is not substituted silently.
+- The exact model uses a provider-compatible strict outer response containing `message` and JSON-string `operations`; every operation string is then parsed through the discriminated Pydantic operation models before any database write.
 - The product title and document metadata are `Kanban Studio`; the small header label is `PROJECT BOARD`.
+- AI and manual board writes are mutually exclusive in the browser so stale whole-board saves cannot race an AI transaction.
+- The AI interface is a persistent 360px sidebar at 1536px and wider, and an accessible modal drawer below that breakpoint so the established horizontal board and pointer drag behavior remain usable.
+- Successful user/assistant message pairs use versioned `sessionStorage` key `kanban-studio.chat.v1`. Failed drafts are retained only in component state for retry and are not written to history.
 
 ## MVP scope
 
@@ -70,11 +74,12 @@ Excluded:
 - `.env` is ignored and contains the expected OpenRouter variable name. Its value must remain private.
 - The frontend is Next.js 16.3.1 with the App Router, React 19.2.8, strict TypeScript, Tailwind CSS 4, dnd-kit, Radix Dialog, Lucide, Vitest, Testing Library, and Playwright.
 - The frontend board uses its reducer for interaction state and FastAPI/SQLite as the only durable source of truth; Part 7 removed browser board persistence.
-- Current verification through Part 8 on 2026-08-17:
-  - Frontend: all 17 Vitest tests, lint, type checking, and the static production build pass.
-  - Backend: all 27 deterministic pytest tests pass in the locked container environment; the explicitly selected live OpenRouter test also passes independently.
-  - Browser: the container-backed Playwright workflow passes authentication plus every manual board mutation against the real FastAPI and SQLite boundaries, refreshing after each mutation to prove persistence.
-  - Container: the service is healthy at `http://localhost:8000`; manual board persistence remains intact and the authenticated live `/api/chat` smoke test returns the required model's response.
+- Current verification through Part 10 on 2026-08-17:
+  - Frontend: all 25 Vitest tests, lint, type checking, and the static production build pass.
+  - Backend: all 43 deterministic pytest tests pass in the locked container environment; the exact-model live message-only and card-creation tests also pass independently.
+  - Browser: the single container-backed Playwright lifecycle passes authentication, every manual board mutation, deterministic AI create/edit/move/multi-card/message-only/error behavior, refresh persistence, session-history restore, narrow-drawer focus, and logout clearing.
+  - Live UI: the exact model returned `2 + 2 equals 4` through the responsive chat after one retryable free-tier rate limit; the visible board stayed unchanged and browser logs remained clear.
+  - Container: the rebuilt service is healthy at `http://localhost:8000`; a live AI-created card survived full container recreation and a new login, and the original board was restored exactly afterward.
   - Storage and security: browser board persistence is absent, generated data remains ignored, and the OpenRouter key is not present in image metadata/history, the runtime filesystem, static frontend output, or captured logs.
 
 ## Target request flow
@@ -493,46 +498,55 @@ Target positions are zero-based insertion indexes. A create position is evaluate
 
 ### Work checklist
 
-- [ ] Define Pydantic models and the matching strict JSON schema for the assistant response and each operation type.
-- [ ] Accept one non-empty user message plus prior user/assistant messages supplied from the current browser session.
-- [ ] Validate conversation roles and content before calling the provider.
-- [ ] Load the signed-in user's current board from SQLite for every request.
-- [ ] Build a stable system instruction containing the complete canonical board JSON, operation rules, and conversation context.
-- [ ] Request Structured Outputs from OpenRouter using the exact required model and schema.
-- [ ] Parse and validate the response before beginning any database mutation.
-- [ ] Resolve all referenced cards and columns within the authenticated user's board.
-- [ ] Generate IDs for `create_card` operations on the backend.
-- [ ] Reject an operation that tries to reference a card created earlier in the same response; only pre-existing board IDs are valid references.
-- [ ] Apply every operation through the Part 6 board service in one transaction and preserve requested order.
-- [ ] Roll back the full operation list if any operation is invalid or fails.
-- [ ] Return the assistant message, a concise summary of applied operations, and the authoritative updated board.
-- [ ] Return the unchanged board on valid message-only responses.
-- [ ] Keep conversation history out of SQLite and logs.
-- [ ] If the exact model/provider rejects strict Structured Outputs, capture the response and ask for direction before changing model or contract.
+- [x] Define strict Pydantic models for the assistant response and each operation type plus the provider-compatible strict outer JSON schema.
+- [x] Accept one non-empty user message plus prior user/assistant messages supplied from the current browser session.
+- [x] Validate conversation roles and content before calling the provider.
+- [x] Load the signed-in user's current board from SQLite for every request.
+- [x] Build a stable system instruction containing the complete canonical board JSON, operation rules, and conversation context.
+- [x] Request Structured Outputs from OpenRouter using the exact required model and schema.
+- [x] Parse and validate the response before beginning any database mutation.
+- [x] Resolve all referenced cards and columns within the authenticated user's board.
+- [x] Generate IDs for `create_card` operations on the backend.
+- [x] Reject an operation that tries to reference a card created earlier in the same response; only pre-existing board IDs are valid references.
+- [x] Apply every operation through the Part 6 board service in one transaction and preserve requested order.
+- [x] Roll back the full operation list if any operation is invalid or fails.
+- [x] Return the assistant message, a concise summary of applied operations, and the authoritative updated board.
+- [x] Return the unchanged board on valid message-only responses.
+- [x] Keep conversation history out of SQLite and logs.
+- [x] If the exact model/provider rejects strict Structured Outputs, capture the response and ask for direction before changing model or contract.
+
+### Part 9 verification record
+
+- All 43 deterministic backend tests pass with the two live tests deselected. They cover the provider payload and schema, complete board and conversation context, message-only replies, each operation type, ordered multi-operation updates, same- and cross-column movement, backend-generated IDs, unknown/new/duplicate card rejection, invalid positions, atomic rollback, authentication, second-user isolation, reopen persistence, provider errors, and absence of chat storage.
+- The official OpenRouter models API lists both `response_format` and `structured_outputs` for `openai/gpt-oss-20b:free`, and requests use `provider.require_parameters: true`. Live probes proved the active free provider reliably enforces a small outer schema but intermittently ignores schemas using generated definitions, nested operation unions/objects, or unsupported keywords.
+- The model remains exactly `openai/gpt-oss-20b:free`. Its strict provider-facing response is the compatible outer `{message, operations[]}` shape, where every operation is a JSON string. The backend parses each string through the discriminated create/edit/move Pydantic models, resolves ownership and positions, and rejects the full response before persistence if anything is invalid.
+- Both live tests pass independently through authenticated FastAPI: the message-only test returned `4` with no board change, and the mutation test created a card in a temporary SQLite database and read it back in the requested position.
+- Container: the rebuilt application is healthy at `http://localhost:8000`. A real AI-created card persisted through the mounted SQLite database, the response returned the authoritative board and applied-operation summary, and the original board was restored afterward.
+- Secret audit: the replacement key is ignored by Git and absent from image metadata/history, runtime files, static frontend output, captured logs, and source diffs.
 
 ### Tests
 
-- [ ] Assert the current database board, latest question, and complete supplied history are included in the provider request.
-- [ ] Test a message-only response with zero operations and no database change.
-- [ ] Test each operation type independently.
-- [ ] Test multiple creates, edits, and moves in one response, with later operations limited to card IDs present in the supplied board.
-- [ ] Test and reject a later operation that attempts to reference a card newly created in the same response.
-- [ ] Test card order after same-column and cross-column AI moves.
-- [ ] Test malformed structured output, unknown operation type, duplicate/unknown card, unknown column, blank title, and invalid position.
-- [ ] Prove one invalid operation rolls back every earlier operation in the same response.
-- [ ] Test authentication and second-user isolation.
-- [ ] Test provider timeout/error after loading the board and prove it makes no database change.
-- [ ] Close and reopen SQLite after a valid AI update and prove the update remains.
-- [ ] Run an explicit live strict-schema smoke test with the exact model.
-- [ ] Confirm no chat record is written to SQLite.
+- [x] Assert the current database board, latest question, and complete supplied history are included in the provider request.
+- [x] Test a message-only response with zero operations and no database change.
+- [x] Test each operation type independently.
+- [x] Test multiple creates, edits, and moves in one response, with later operations limited to card IDs present in the supplied board.
+- [x] Test and reject a later operation that attempts to reference a card newly created in the same response.
+- [x] Test card order after same-column and cross-column AI moves.
+- [x] Test malformed structured output, unknown operation type, duplicate/unknown card, unknown column, blank title, and invalid position.
+- [x] Prove one invalid operation rolls back every earlier operation in the same response.
+- [x] Test authentication and second-user isolation.
+- [x] Test provider timeout/error after loading the board and prove it makes no database change.
+- [x] Close and reopen SQLite after a valid AI update and prove the update remains.
+- [x] Run explicit live strict-schema message-only and card-creation smoke tests with the exact model.
+- [x] Confirm no chat record is written to SQLite.
 
 ### Success criteria
 
-- [ ] The provider always receives the authoritative board and current conversation.
-- [ ] Only schema-valid, ownership-valid operations can mutate the board.
-- [ ] Multi-operation responses are all-or-nothing.
-- [ ] AI-created, edited, and moved cards persist exactly like manual changes.
-- [ ] Chat history remains session-only.
+- [x] The provider always receives the authoritative board and current conversation.
+- [x] Only schema-valid, ownership-valid operations can mutate the board.
+- [x] Multi-operation responses are all-or-nothing.
+- [x] AI-created, edited, and moved cards persist exactly like manual changes.
+- [x] Chat history remains session-only.
 
 ## Part 10: AI chat sidebar and final integration
 
@@ -540,51 +554,62 @@ Goal: deliver the complete responsive chat experience and automatically show dur
 
 ### Work checklist
 
-- [ ] Add a polished desktop sidebar and a usable small-screen drawer without reducing the board's existing functionality.
-- [ ] Use the required yellow, blue, purple, navy, and gray palette; keep text concise and use no emojis.
-- [ ] Add accessible open/close controls, focus management, labels, keyboard behavior, and screen-reader status text.
-- [ ] Render user and assistant messages, an empty state, sending state, and concise retryable errors.
-- [ ] Send the current user message and browser-session history to `/api/chat`.
-- [ ] Store only user/assistant chat messages in `sessionStorage` under one versioned key.
-- [ ] Restore chat after refresh in the same tab and clear it on logout.
-- [ ] Do not store chat in `localStorage`, cookies, or SQLite.
-- [ ] On a successful AI response, replace the visible board immediately with the authoritative returned board.
-- [ ] On a provider or validation failure, retain the existing board and show the error.
-- [ ] Support message-only replies as well as single- and multi-card updates.
-- [ ] Keep the input usable after success and retryable after failure; prevent accidental duplicate sends while a request is active.
-- [ ] Update the minimal README with final setup, start, sign-in, test, and stop instructions.
-- [ ] Run the complete offline suite, container suite, deterministic AI browser suite, and explicit live smoke tests.
+- [x] Add a polished desktop sidebar and a usable small-screen drawer without reducing the board's existing functionality.
+- [x] Use the required yellow, blue, purple, navy, and gray palette; keep text concise and use no emojis.
+- [x] Add accessible open/close controls, focus management, labels, keyboard behavior, and screen-reader status text.
+- [x] Render user and assistant messages, an empty state, sending state, and concise retryable errors.
+- [x] Send the current user message and browser-session history to `/api/chat`.
+- [x] Store only user/assistant chat messages in `sessionStorage` under one versioned key.
+- [x] Restore chat after refresh in the same tab and clear it on logout.
+- [x] Do not store chat in `localStorage`, cookies, or SQLite.
+- [x] On a successful AI response, replace the visible board immediately with the authoritative returned board.
+- [x] On a provider or validation failure, retain the existing board and show the error.
+- [x] Support message-only replies as well as single- and multi-card updates.
+- [x] Keep the input usable after success and retryable after failure; prevent accidental duplicate sends while a request is active.
+- [x] Update the minimal README with final setup, start, sign-in, test, and stop instructions.
+- [x] Run the complete offline suite, container suite, deterministic AI browser suite, and explicit live smoke tests.
+
+### Part 10 verification record
+
+- UI and state: the final frontend adds one typed chat client and one chat component. Successful responses replace the reducer state with the authoritative returned board; AI requests and manual whole-board saves cannot overlap. Only successful user/assistant pairs are stored under `kanban-studio.chat.v1`, and successful logout removes that key.
+- Fullscreen layout follow-up: the board grid and chat now consume one shared state derived from the rendered page width. Entering fullscreen cannot reserve the 360px desktop-chat column while leaving the chat in drawer mode.
+- Responsive and accessibility: browser review confirmed the 360px wide-screen sidebar, modal drawer below 1536px, initial textarea focus, Escape closing and trigger-focus return, native keyboard-edit buttons on cards, accessible labels, live status text, and the established board scroll/drag behavior.
+- Focused tests: all 25 Vitest tests pass. Coverage protects the narrow-to-fullscreen sidebar transition, exact chat payload, safe errors, valid session history, drawer focus, restore, disabled/sending state, message-only response, multi-operation board replacement, failure/no-change behavior, retry, and logout clearing.
+- Browser integration: the existing single lifecycle now covers deterministic AI create, edit, move, multi-card update, message-only reply, and provider failure. It mocks the chat HTTP response at the frontend boundary while writing every successful authoritative result through the real board API and SQLite; the backend suite already covers the provider boundary and transactional chat write, avoiding redundant browser-only backend machinery.
+- Persistence: the browser lifecycle proves immediate rendering and refresh persistence. A separate live exact-model card creation was then read back after full container recreation and a new login; the user's original board was restored byte-for-byte afterward.
+- Live provider: both explicit backend live tests pass. The final UI message-only smoke test encountered one mapped free-tier rate limit, kept its draft, succeeded through the visible Retry control, returned `2 + 2 equals 4`, and changed no cards.
+- Final acceptance: the documented Windows stop/start scripts removed and recreated the container while the board hash remained unchanged. The final service is healthy, serves the static Kanban UI from FastAPI, contains no Node runtime/frontend source, and passed the source/image/runtime/log secret audit.
 
 ### Tests
 
-- [ ] Component-test opening/closing, sending, disabled state, message rendering, message-only replies, errors, and retry.
-- [ ] Component-test `sessionStorage` restore and logout clearing.
-- [ ] Component-test immediate board replacement after one and multiple AI operations.
-- [ ] Deterministic browser-test AI create, edit, move, and multi-card update flows with a mocked provider boundary and real backend/database.
-- [ ] Browser-test narrow viewport layout, keyboard focus, and accessible names.
-- [ ] Prove a failed or invalid AI response changes neither the UI board nor SQLite.
-- [ ] Refresh after an AI edit and prove the board persists while chat follows the selected session lifetime.
-- [ ] Recreate the container and prove manual and AI board edits remain while an authentication session may require renewal.
-- [ ] Verify logout clears chat but not the board.
-- [ ] Run frontend lint/unit/build, backend tests, Docker build/smoke, Playwright, and the explicit live OpenRouter tests.
-- [ ] Perform one final clean-start manual acceptance flow using the documented scripts.
+- [x] Component-test opening/closing, sending, disabled state, message rendering, message-only replies, errors, and retry.
+- [x] Component-test `sessionStorage` restore and logout clearing.
+- [x] Component-test immediate board replacement after one and multiple AI operations.
+- [x] Deterministic browser-test AI create, edit, move, and multi-card update flows with the chat HTTP boundary mocked and the real board API/database persisting each result; retain provider-boundary coverage in backend tests.
+- [x] Browser-test narrow viewport layout, keyboard focus, and accessible names.
+- [x] Prove a failed or invalid AI response changes neither the UI board nor SQLite.
+- [x] Refresh after an AI edit and prove the board persists while chat follows the selected session lifetime.
+- [x] Recreate the container and prove manual and AI board edits remain while an authentication session may require renewal.
+- [x] Verify logout clears chat but not the board.
+- [x] Run frontend lint/unit/build, backend tests, Docker build/smoke, Playwright, and the explicit live OpenRouter tests.
+- [x] Perform one final clean-start manual acceptance flow using the documented scripts.
 
 ### Success criteria
 
-- [ ] A fresh user can start the container, sign in, view the seeded board, and log out.
-- [ ] Manual column and card changes are durable.
-- [ ] The AI can reply without editing or can create, edit, and move one or more cards.
-- [ ] Valid AI changes appear automatically and remain after refresh and container recreation.
-- [ ] Chat history exists only for the browser session and clears on logout.
-- [ ] All required automated checks and the final clean-start acceptance flow pass.
+- [x] A fresh user can start the container, sign in, view the seeded board, and log out.
+- [x] Manual column and card changes are durable.
+- [x] The AI can reply without editing or can create, edit, and move one or more cards.
+- [x] Valid AI changes appear automatically and remain after refresh and container recreation.
+- [x] Chat history exists only for the browser session and clears on logout.
+- [x] All required automated checks and the final clean-start acceptance flow pass.
 
 ## Final definition of done
 
-- [ ] The user has approved both required planning gates.
-- [ ] The application meets every included MVP behavior and none of the excluded features were added.
-- [ ] One documented command starts the healthy local application on each supported operating-system family.
-- [ ] One documented command stops it without deleting board data.
-- [ ] The final container contains FastAPI, the static frontend, and SQLite support, with no Node runtime server.
-- [ ] The root README remains minimal and accurate.
-- [ ] No secrets or generated runtime data are committed.
-- [ ] All tests and acceptance checks listed above pass.
+- [x] The user has approved both required planning gates.
+- [x] The application meets every included MVP behavior and none of the excluded features were added.
+- [x] One documented command starts the healthy local application on each supported operating-system family.
+- [x] One documented command stops it without deleting board data.
+- [x] The final container contains FastAPI, the static frontend, and SQLite support, with no Node runtime server.
+- [x] The root README remains minimal and accurate.
+- [x] No secrets or generated runtime data are committed.
+- [x] All tests and acceptance checks listed above pass.

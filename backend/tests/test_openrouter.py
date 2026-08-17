@@ -1,50 +1,148 @@
 import json
-import os
-import re
-from pathlib import Path
+from copy import deepcopy
 
 import httpx2
 import pytest
-from fastapi.testclient import TestClient
 
-from app.main import create_app
+from app.ai import AssistantBoardResponse, ChatMessage
+from app.database import SEED_BOARD_STATE
+from app.models import BoardState
 from app.openrouter import (
     OPENROUTER_API_URL,
     OPENROUTER_MODEL,
     OpenRouterError,
-    request_chat_completion,
+    request_board_completion,
 )
 
 
-def test_openrouter_request_and_response(monkeypatch: pytest.MonkeyPatch) -> None:
+def seed_board() -> BoardState:
+    return BoardState.model_validate(deepcopy(SEED_BOARD_STATE))
+
+
+def structured_content(
+    message: str = "Done",
+    operations: list[dict[str, object]] | None = None,
+) -> str:
+    items = operations or []
+    return json.dumps(
+        {
+            "message": message,
+            "operations": [json.dumps(item, separators=(",", ":")) for item in items],
+        }
+    )
+
+
+def test_openrouter_structured_request_includes_board_and_conversation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-secret")
+    board = seed_board()
+    history = [
+        ChatMessage(role="user", content="Earlier question"),
+        ChatMessage(role="assistant", content="Earlier answer"),
+    ]
 
     def respond(request: httpx2.Request) -> httpx2.Response:
         assert request.method == "POST"
         assert str(request.url) == OPENROUTER_API_URL
         assert request.headers["authorization"] == "Bearer test-secret"
-        assert json.loads(request.content) == {
-            "model": OPENROUTER_MODEL,
-            "messages": [{"role": "user", "content": "What is 2+2?"}],
-        }
+        payload = json.loads(request.content)
+        assert payload["model"] == OPENROUTER_MODEL
+        assert payload["provider"] == {"require_parameters": True}
+        assert board.model_dump_json(by_alias=True) in payload["messages"][0]["content"]
+        assert payload["messages"][1:] == [
+            {"role": "user", "content": "Earlier question"},
+            {"role": "assistant", "content": "Earlier answer"},
+            {"role": "user", "content": "Move the kickoff card"},
+        ]
+        response_format = payload["response_format"]
+        assert response_format["type"] == "json_schema"
+        assert response_format["json_schema"]["strict"] is True
+        assert response_format["json_schema"]["name"] == "kanban_board_response"
+        schema = response_format["json_schema"]["schema"]
+        assert schema["additionalProperties"] is False
+        assert schema["required"] == ["message", "operations"]
+        assert "$defs" not in schema
+        assert schema["properties"]["operations"]["items"] == {"type": "string"}
         return httpx2.Response(
             200,
-            json={"choices": [{"message": {"content": " 4 "}}]},
+            json={
+                "choices": [
+                    {"message": {"content": structured_content("  Ready  ")}}
+                ]
+            },
         )
 
-    message = request_chat_completion(
-        "What is 2+2?",
+    result = request_board_completion(
+        board,
+        "Move the kickoff card",
+        history,
         transport=httpx2.MockTransport(respond),
     )
 
-    assert message == "4"
+    assert result == AssistantBoardResponse(message="Ready", operations=[])
+
+
+def test_openrouter_converts_flat_provider_operations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-secret")
+    content = structured_content(
+        operations=[
+            {
+                "type": "create_card",
+                "title": "Create this",
+                "details": "New details",
+                "columnId": "ideas",
+                "position": 0,
+            },
+            {
+                "type": "edit_card",
+                "cardId": "card-brief",
+                "title": "Edit this",
+                "details": "Edited details",
+            },
+            {
+                "type": "move_card",
+                "cardId": "card-kickoff",
+                "columnId": "done",
+                "position": 1,
+            },
+        ]
+    )
+    transport = httpx2.MockTransport(
+        lambda _request: httpx2.Response(
+            200,
+            json={"choices": [{"message": {"content": content}}]},
+        )
+    )
+
+    result = request_board_completion(
+        seed_board(),
+        "Update cards",
+        [],
+        transport=transport,
+    )
+
+    assert [operation.type for operation in result.operations] == [
+        "create_card",
+        "edit_card",
+        "move_card",
+    ]
+    assert result.operations[0].model_dump(by_alias=True) == {
+        "type": "create_card",
+        "title": "Create this",
+        "details": "New details",
+        "columnId": "ideas",
+        "position": 0,
+    }
 
 
 def test_openrouter_requires_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
 
     with pytest.raises(OpenRouterError) as caught:
-        request_chat_completion("Hello")
+        request_board_completion(seed_board(), "Hello", [])
 
     assert (caught.value.status_code, caught.value.detail) == (
         503,
@@ -77,7 +175,7 @@ def test_openrouter_maps_provider_errors(
     )
 
     with pytest.raises(OpenRouterError) as caught:
-        request_chat_completion("Hello", transport=transport)
+        request_board_completion(seed_board(), "Hello", [], transport=transport)
 
     assert (caught.value.status_code, caught.value.detail) == (
         expected_status,
@@ -93,7 +191,12 @@ def test_openrouter_maps_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
         raise httpx2.ReadTimeout("provider took too long", request=request)
 
     with pytest.raises(OpenRouterError) as caught:
-        request_chat_completion("Hello", transport=httpx2.MockTransport(time_out))
+        request_board_completion(
+            seed_board(),
+            "Hello",
+            [],
+            transport=httpx2.MockTransport(time_out),
+        )
 
     assert (caught.value.status_code, caught.value.detail) == (
         504,
@@ -110,7 +213,7 @@ def test_openrouter_maps_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
         httpx2.Response(200, json={"choices": [{"message": {"content": " "}}]}),
     ],
 )
-def test_openrouter_rejects_malformed_responses(
+def test_openrouter_rejects_malformed_provider_responses(
     monkeypatch: pytest.MonkeyPatch,
     response: httpx2.Response,
 ) -> None:
@@ -118,7 +221,7 @@ def test_openrouter_rejects_malformed_responses(
     transport = httpx2.MockTransport(lambda _request: response)
 
     with pytest.raises(OpenRouterError) as caught:
-        request_chat_completion("Hello", transport=transport)
+        request_board_completion(seed_board(), "Hello", [], transport=transport)
 
     assert (caught.value.status_code, caught.value.detail) == (
         502,
@@ -126,57 +229,63 @@ def test_openrouter_rejects_malformed_responses(
     )
 
 
-def test_chat_route_requires_authentication(client: TestClient) -> None:
-    response = client.post("/api/chat", json={"message": "Hello"})
-
-    assert response.status_code == 401
-    assert response.json() == {"detail": "Not authenticated"}
-
-
-def test_chat_route_returns_message_and_validates_input(
-    static_dir: Path,
-    database_path: Path,
+@pytest.mark.parametrize(
+    "content",
+    [
+        "not-json",
+        json.dumps({"message": "Done"}),
+        structured_content(
+            operations=[{"type": "delete_card", "cardId": "card-brief"}]
+        ),
+        structured_content(
+            operations=[
+                {
+                    "type": "create_card",
+                    "title": " ",
+                    "details": "",
+                    "columnId": "ideas",
+                    "position": 0,
+                }
+            ]
+        ),
+        structured_content(
+            operations=[
+                {
+                    "type": "move_card",
+                    "cardId": "card-brief",
+                    "columnId": "archive",
+                    "position": 0,
+                }
+            ]
+        ),
+        structured_content(
+            operations=[
+                {
+                    "type": "move_card",
+                    "cardId": "card-brief",
+                    "columnId": "done",
+                    "position": -1,
+                }
+            ]
+        ),
+    ],
+)
+def test_openrouter_rejects_invalid_structured_output(
+    monkeypatch: pytest.MonkeyPatch,
+    content: str,
 ) -> None:
-    received: list[str] = []
-
-    def complete(message: str) -> str:
-        received.append(message)
-        return "Hello from the model"
-
-    with TestClient(
-        create_app(static_dir, database_path, chat_completion=complete),
-    ) as client:
-        client.post(
-            "/api/auth/login",
-            json={"username": "user", "password": "password"},
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-secret")
+    transport = httpx2.MockTransport(
+        lambda _request: httpx2.Response(
+            200,
+            json={"choices": [{"message": {"content": content}}]},
         )
-        response = client.post("/api/chat", json={"message": "  Hello  "})
-        malformed = client.post("/api/chat", json={"message": " "})
+    )
 
-    assert response.status_code == 200
-    assert response.json() == {"message": "Hello from the model"}
-    assert received == ["Hello"]
-    assert malformed.status_code == 400
-    assert malformed.json() == {"detail": "Invalid request"}
+    with pytest.raises(OpenRouterError) as caught:
+        request_board_completion(seed_board(), "Hello", [], transport=transport)
 
-
-@pytest.mark.live
-def test_live_openrouter_chat_through_fastapi(
-    static_dir: Path,
-    database_path: Path,
-) -> None:
-    if os.environ.get("RUN_LIVE_OPENROUTER") != "1":
-        pytest.skip("set RUN_LIVE_OPENROUTER=1 to call OpenRouter")
-
-    with TestClient(create_app(static_dir, database_path)) as client:
-        client.post(
-            "/api/auth/login",
-            json={"username": "user", "password": "password"},
-        )
-        response = client.post(
-            "/api/chat",
-            json={"message": "What is 2+2? Reply with only the number."},
-        )
-
-    assert response.status_code == 200, response.json()
-    assert re.search(r"\b4\b", response.json()["message"])
+    assert (caught.value.status_code, caught.value.detail) == (
+        502,
+        "AI service returned an invalid response",
+    )

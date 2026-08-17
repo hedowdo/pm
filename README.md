@@ -22,7 +22,7 @@ sh scripts/start.sh
 
 Open `http://localhost:8000`.
 
-Sign in with username `user` and password `password`. Sessions are stored in memory, so restarting the application may require signing in again. Board data is not cleared by logout.
+Sign in with username `user` and password `password`. The AI assistant can create, edit, and move cards. Board changes persist in `data/`; chat history lasts only for the current browser tab and clears on logout. Restarting the application may require signing in again.
 
 ## Frontend development
 
@@ -33,6 +33,28 @@ npm run dev
 ```
 
 The Docker build creates the static frontend and serves it through FastAPI.
+
+## Test
+
+Frontend checks:
+
+```sh
+cd frontend
+npm install
+npm run lint
+npm test
+npm run build
+```
+
+Backend checks require [uv](https://docs.astral.sh/uv/):
+
+```sh
+cd backend
+uv sync --locked
+uv run pytest -m "not live"
+```
+
+With the container running, run the browser workflow from `frontend/` with `PLAYWRIGHT_BASE_URL=http://127.0.0.1:8000` set in your shell, then run `npm run test:e2e`.
 
 ## Stop
 

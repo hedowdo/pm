@@ -1,7 +1,8 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { BoardApiError, getBoard, saveBoard } from "@/lib/board-api";
 import { initialBoardState, type BoardState } from "@/lib/board";
+import { sendChat } from "@/lib/chat";
 import { KanbanBoard } from "./kanban-board";
 
 vi.mock("@/lib/board-api", async (importOriginal) => {
@@ -13,8 +14,17 @@ vi.mock("@/lib/board-api", async (importOriginal) => {
   };
 });
 
+vi.mock("@/lib/chat", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/chat")>();
+  return {
+    ...actual,
+    sendChat: vi.fn(),
+  };
+});
+
 const getBoardMock = vi.mocked(getBoard);
 const saveBoardMock = vi.mocked(saveBoard);
+const sendChatMock = vi.mocked(sendChat);
 
 function boardCopy(): BoardState {
   return structuredClone(initialBoardState);
@@ -35,8 +45,51 @@ describe("KanbanBoard", () => {
   beforeEach(() => {
     getBoardMock.mockReset();
     saveBoardMock.mockReset();
+    sendChatMock.mockReset();
+    window.sessionStorage.clear();
     getBoardMock.mockResolvedValue(boardCopy());
     saveBoardMock.mockImplementation(async (board) => structuredClone(board));
+  });
+
+  it("switches the sidebar and its layout column together when entering fullscreen", async () => {
+    let bodyWidth = 1000;
+    const bodyRect = vi
+      .spyOn(document.body, "getBoundingClientRect")
+      .mockImplementation(
+        () =>
+          ({
+            bottom: 900,
+            height: 900,
+            left: 0,
+            right: bodyWidth,
+            top: 0,
+            width: bodyWidth,
+            x: 0,
+            y: 0,
+            toJSON: () => undefined,
+          }) as DOMRect,
+      );
+
+    renderBoard();
+
+    const layout = await screen.findByTestId("board-layout");
+    expect(layout.className).not.toContain("grid-cols-");
+    expect(screen.getByRole("button", { name: "Open AI chat" })).toBeInTheDocument();
+
+    act(() => {
+      bodyWidth = 1600;
+      window.dispatchEvent(new Event("resize"));
+    });
+
+    await waitFor(() =>
+      expect(layout.className).toContain("grid-cols-[minmax(0,1fr)_360px]"),
+    );
+    expect(screen.getByRole("complementary", { name: "AI assistant" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Open AI chat" }),
+    ).not.toBeInTheDocument();
+
+    bodyRect.mockRestore();
   });
 
   it("loads the authoritative board and reconciles a rename with the save response", async () => {
@@ -137,6 +190,35 @@ describe("KanbanBoard", () => {
       screen.getByRole("heading", { name: "Restored from server" }),
     ).toBeInTheDocument();
     expect(getBoardMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("shows the authoritative board returned after multiple AI operations", async () => {
+    const authoritative = boardCopy();
+    authoritative.cards[0].title = "AI revised brief";
+    authoritative.cards[1].columnId = "done";
+    sendChatMock.mockResolvedValueOnce({
+      message: "I updated the brief and moved the kickoff.",
+      appliedOperations: [
+        { type: "edit_card", cardId: "card-brief" },
+        { type: "move_card", cardId: "card-kickoff" },
+      ],
+      board: authoritative,
+    });
+    const user = userEvent.setup();
+
+    renderBoard();
+    await user.click(await screen.findByRole("button", { name: "Open AI chat" }));
+    await user.type(
+      screen.getByLabelText("Message the board assistant"),
+      "Update the brief and kickoff",
+    );
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    expect(await screen.findByText("AI revised brief")).toBeInTheDocument();
+    const doneColumn = screen.getByTestId("column-done");
+    expect(within(doneColumn).getByText("Schedule project kickoff")).toBeInTheDocument();
+    expect(sendChatMock).toHaveBeenCalledWith("Update the brief and kickoff", []);
+    expect(saveBoardMock).not.toHaveBeenCalled();
   });
 
   it("shows a recoverable load error and retries", async () => {

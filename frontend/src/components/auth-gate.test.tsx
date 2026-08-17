@@ -1,6 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { initialBoardState } from "@/lib/board";
+import { CHAT_HISTORY_KEY } from "@/lib/chat";
 import { AuthGate } from "./auth-gate";
 
 function jsonResponse(body: unknown, status = 200) {
@@ -16,6 +17,7 @@ describe("AuthGate", () => {
   beforeEach(() => {
     fetchMock.mockReset();
     vi.stubGlobal("fetch", fetchMock);
+    window.sessionStorage.clear();
   });
 
   afterEach(() => vi.unstubAllGlobals());
@@ -26,7 +28,6 @@ describe("AuthGate", () => {
       .mockResolvedValueOnce(jsonResponse({ username: "user" }))
       .mockResolvedValueOnce(jsonResponse(initialBoardState));
     const user = userEvent.setup();
-
     render(<AuthGate />);
 
     expect(screen.getByRole("status")).toHaveTextContent("Checking your session");
@@ -64,6 +65,10 @@ describe("AuthGate", () => {
       .mockResolvedValueOnce(jsonResponse(initialBoardState))
       .mockResolvedValueOnce(new Response(null, { status: 204 }));
     const user = userEvent.setup();
+    window.sessionStorage.setItem(
+      CHAT_HISTORY_KEY,
+      JSON.stringify([{ role: "user", content: "Session-only message" }]),
+    );
 
     render(<AuthGate />);
 
@@ -76,5 +81,6 @@ describe("AuthGate", () => {
       "/api/auth/logout",
       expect.objectContaining({ method: "POST", credentials: "same-origin" }),
     );
+    expect(window.sessionStorage.getItem(CHAT_HISTORY_KEY)).toBeNull();
   });
 });

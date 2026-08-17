@@ -10,7 +10,7 @@ This version has breaking changes - APIs, conventions, and file structure may di
 
 These instructions apply to the frontend demo in `frontend/`. Part 2 of `../docs/plan.md` renamed it from `front end/`, and Part 3 configured its static export for the FastAPI container; do not create a second competing frontend directory.
 
-The current app is a single-board, client-rendered Kanban app protected by the FastAPI session flow. Part 7 made FastAPI and SQLite the only durable board source: the frontend loads from `GET /api/board` and saves complete states through `PUT /api/board`. Board state is no longer read from or written to browser storage.
+The current app is a complete single-board, client-rendered Kanban MVP protected by the FastAPI session flow. FastAPI and SQLite are the only durable board source: the frontend loads from `GET /api/board`, saves complete manual states through `PUT /api/board`, and replaces the visible state with the authoritative board returned by `POST /api/chat`. Board state is never read from or written to browser storage.
 
 Keep changes small, follow the root `AGENTS.md`, and add no feature outside the approved plan. Use no emojis in code, UI copy, tests, or documentation.
 
@@ -33,9 +33,10 @@ Before using or changing a Next.js API, consult the matching local documentation
 - `src/app/page.tsx`: the single `/` route; renders the client-side authentication gate.
 - `src/app/globals.css`: Tailwind import, palette variables, global typography, page background, and scrollbar styling.
 - `src/components/auth-gate.tsx`: initial session check, sign-in form, authenticated board gate, and logout state.
+- `src/components/ai-chat.tsx`: session-only AI conversation state, wide-screen sidebar, responsive drawer, request state, errors, and authoritative board callback.
 - `src/components/kanban-board.tsx`: all current UI and interaction components:
   - `KanbanBoard`: authenticated initial load plus loading and recoverable-error states.
-  - `BoardWorkspace`: reducer state, serialized authoritative saves, recovery, drag sensors, active drag state, and editor state.
+  - `BoardWorkspace`: reducer state, serialized authoritative manual saves, AI/manual write exclusion, AI board reconciliation, recovery, drag sensors, active drag state, and editor state.
   - `KanbanColumn`: fixed column UI, rename behavior, drop target, card count, and create action.
   - `KanbanCard`: sortable card and grip-only drag handle.
   - `DraggedCardPreview`: drag overlay.
@@ -43,12 +44,15 @@ Before using or changing a Next.js API, consult the matching local documentation
 - `src/lib/board.ts`: board types, seed fixture, reducer, filtering, and move/order logic.
 - `src/lib/auth.ts`: typed same-origin calls for login, session lookup, and logout.
 - `src/lib/board-api.ts`: typed same-origin board load/save calls and status-aware errors.
+- `src/lib/chat.ts`: typed chat API call, safe errors, versioned session-history storage, and clearing on logout.
 - `src/lib/board.test.ts`: pure state and ordering tests.
 - `src/lib/board-api.test.ts`: board API paths, payloads, responses, and error mapping.
 - `src/components/auth-gate.test.tsx`: focused loading, login failure/success, active-session, and logout coverage.
 - `src/components/kanban-board.test.tsx`: authoritative load, mutation saves, reconciliation, serialization, recovery, and unauthorized-state coverage.
+- `src/components/ai-chat.test.tsx`: drawer focus, session restore, send state, rendering, board replacement, errors, and retry coverage.
+- `src/lib/chat.test.ts`: chat payload, error, and session-history contract tests.
 - `src/test/setup.ts`: jest-dom test setup.
-- `e2e/board.spec.ts`: one container-capable authenticated SQLite workflow with refresh checks after rename, card CRUD, cross-column pointer drag, and same-column keyboard reorder.
+- `e2e/board.spec.ts`: one container-capable authenticated SQLite workflow covering manual board behavior plus deterministic AI create/edit/move/multi-card/error flows, refresh, responsive focus, session history, and logout.
 - `next.config.ts`, `vitest.config.ts`, and `playwright.config.ts`: framework and test configuration.
 
 Keep pure board transformations out of JSX when practical. Do not split the current compact component merely to create abstraction; extract only when integration produces a clear reusable boundary, such as a typed API client.
@@ -78,7 +82,8 @@ Do not add column creation, deletion, or reordering. The AI MVP may create, edit
 - Preserve accessible labels used by users and tests, including `Rename ...`, `Add card to ...`, `Drag ...`, `Column name`, `Card title`, and `Details`.
 - Preserve `data-testid="column-{id}"` and `data-testid="kanban-card"` unless tests are intentionally migrated to a better accessible query.
 - Maintain keyboard and focus behavior when touching dialogs, rename controls, drag handles, and the future chat drawer.
-- The current clickable card container is a non-interactive `article`; when that component is next changed, correct its keyboard activation without disrupting the nested drag button.
+- Each card uses a native `Edit ...` button for keyboard activation while keeping the nested grip as the only drag handle.
+- Manual board writes and AI requests must not overlap. While either is active, disable the other mutation path and reconcile only the authoritative response.
 
 ## Styling conventions
 
@@ -92,6 +97,7 @@ Do not add column creation, deletion, or reordering. The AI MVP may create, edit
 - Body text uses Arial/Helvetica; `.editorial-title` uses Georgia/Times.
 - The design uses a warm paper background, subtle radial gradients, navy column headers, white cards, rounded panels, and restrained shadows.
 - The five-column board has a 1420px minimum width and scrolls horizontally on smaller screens. Preserve deliberate horizontal board behavior unless the approved responsive chat design requires an evidence-based adjustment.
+- The chat is a persistent 360px sidebar when the rendered page is at least 1536px wide. Below that breakpoint it is a Radix drawer so the established board and pointer-drag viewport remain usable. `BoardWorkspace` and `AiChat` must consume the same `useDesktopChat` result; do not independently reserve the grid column with a CSS breakpoint.
 - Review and Done currently use coral and green dot accents in addition to the required core palette.
 - Reuse the existing design language for sign-in and chat rather than introducing another visual system.
 
@@ -106,7 +112,7 @@ Do not add column creation, deletion, or reordering. The AI MVP may create, edit
 - Every board mutation sends the resulting complete state to the backend and replaces/reconciles with the authoritative response.
 - Permit only one board save at a time. After an uncertain failure, refetch before enabling more edits so stale local state cannot overwrite SQLite.
 - Do not add board persistence to `localStorage`, `sessionStorage`, cookies, or another browser store.
-- AI chat history alone uses `sessionStorage` in Part 10 and is cleared on logout. Board state never uses `sessionStorage`.
+- AI chat history alone uses `sessionStorage` key `kanban-studio.chat.v1` and contains only successful user/assistant message pairs. It survives refresh in the same tab and is cleared after successful logout. Failed drafts and board state are not stored there.
 
 ## Commands and verification
 
@@ -129,14 +135,15 @@ Required verification depends on the change:
 - Drag-and-drop, routing, auth, persistence, or chat workflow: Playwright plus the relevant lower-level tests.
 - Configuration or static-serving change: lint, unit tests, `next build`, and container/static-asset smoke tests.
 
-Verification observed on 2026-08-16 after Part 7:
+Verification observed on 2026-08-17 after Part 10 and the fullscreen layout fix:
 
 - Lint passed.
-- All 17 Vitest tests passed.
-- All 13 FastAPI tests passed in the locked Python container environment.
+- All 25 Vitest tests passed, including the narrow-to-fullscreen sidebar transition.
+- All 43 deterministic FastAPI tests passed in the locked Python 3.14 container environment; both explicit exact-model live tests passed.
 - The Part 3 production build uses `output: "export"` and writes the static site to `out/`.
-- The container-backed Playwright workflow passed real backend saves and a refresh after every mutation type, then restored the original board. The legacy board-storage key remained absent.
-- A browser-made edit survived full container recreation and a new login, then the original board was restored. The container remained healthy with no browser warnings or errors.
+- The container-backed Playwright lifecycle passed real manual backend saves plus deterministic AI create/edit/move/multi-card/message-only/error flows, refresh persistence, narrow-drawer focus, session-history restore, and logout clearing, then restored the original board.
+- A live AI-created card survived full container recreation and a new login; the original board was restored afterward. The final container remained healthy with no browser warnings or errors.
+- Browser review confirmed the wide sidebar, smaller-screen drawer, keyboard-focused editor buttons, live message-only reply, and clear retryable handling of a transient free-provider rate limit.
 - Same-column browser coverage uses the supported keyboard sensor to move the current second card above the first, which proves a real order change under the reducer's insert-before rule.
 
 ## Generated files and hygiene
