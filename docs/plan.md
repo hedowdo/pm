@@ -1,7 +1,7 @@
 # Project Management MVP Implementation Plan
 
-Status: Part 7 complete and verified; Part 8 has not started  
-Last updated: 2026-08-15
+Status: Part 8 complete and verified; Part 9 has not started
+Last updated: 2026-08-17
 
 ## Plan rules
 
@@ -12,7 +12,7 @@ Last updated: 2026-08-15
 - Product code is kept deliberately small: no feature is added unless it is required by this plan.
 - When a check fails, establish and record the cause before changing code.
 - Secrets are never committed, copied into the frontend, baked into the image, or printed in test output.
-- Application and planning files are currently untracked in Git. Inspect paths before moving files and preserve the current demo during normalization.
+- Inspect Git status before broad changes and preserve user-owned or unrelated work, generated data, and the current working application.
 
 ## Confirmed product and architecture decisions
 
@@ -26,12 +26,18 @@ Last updated: 2026-08-15
 - The session cookie uses `HttpOnly`, `SameSite=Lax`, and path `/`. `Secure` remains disabled for local HTTP.
 - SQLite is created automatically at `/data/kanban.db` in the container.
 - Compose bind-mounts the repository's ignored `data/` directory to `/data`, so container recreation does not erase boards.
-- There is one board per user in the MVP. The database ownership model supports more users later.
+- The database has only `users` and `boards` tables. Each user has at most one board, stored as one validated canonical `state_json` document; passwords and chat messages are not stored.
+- The current hardcoded user is seeded idempotently. The ownership model supports more users later without exposing user IDs in the browser contract.
 - The five column identifiers and their order are fixed. Users may rename columns but may not create, delete, or reorder them.
+- Card order is the order of the single `cards[]` array. A card's `columnId` assigns its column; no separate position records are used.
+- `GET /api/board` returns the authenticated user's complete canonical board. `PUT /api/board` strictly validates and atomically replaces that complete board, then returns the authoritative stored state.
+- The frontend applies a manual change optimistically, allows only one save at a time, and reconciles the response returned by FastAPI. After a failed save it reloads the authoritative board; if that cannot be confirmed, it restores the last known board and blocks further edits until recovery succeeds.
+- SQLite is the only durable source for board data. The frontend does not persist a board in `localStorage`, `sessionStorage`, or cookies.
 - Manual edits and validated AI edits are persisted in SQLite.
 - AI conversation history is kept only in browser `sessionStorage`, survives a refresh in the same tab, and is cleared on logout. It is never stored in SQLite.
 - The backend loads the authoritative board before every AI request. The browser does not provide the authoritative board snapshot.
 - OpenRouter calls use exactly `openai/gpt-oss-20b:free`. A different model is not substituted silently.
+- The product title and document metadata are `Kanban Studio`; the small header label is `PROJECT BOARD`.
 
 ## MVP scope
 
@@ -64,12 +70,12 @@ Excluded:
 - `.env` is ignored and contains the expected OpenRouter variable name. Its value must remain private.
 - The frontend is Next.js 16.3.1 with the App Router, React 19.2.8, strict TypeScript, Tailwind CSS 4, dnd-kit, Radix Dialog, Lucide, Vitest, Testing Library, and Playwright.
 - The frontend board uses its reducer for interaction state and FastAPI/SQLite as the only durable source of truth; Part 7 removed browser board persistence.
-- Existing frontend verification on 2026-08-14:
-  - `npm.cmd test`: 10 tests passed.
-  - `npm.cmd run lint`: passed.
-  - `npm.cmd run build`: passed and prerendered `/`.
-  - Playwright did not complete on this host because the spawned Node development server exhausted memory. Next.js itself reached ready state normally. This is a recorded baseline limitation, not a Part 1 product-code fix.
-  - The current Playwright reorder step drags the first card over the second while the reducer inserts before the target, so that gesture cannot prove an order change. Correct the test design when Part 3 activates the browser suite.
+- Current verification through Part 8 on 2026-08-17:
+  - Frontend: all 17 Vitest tests, lint, type checking, and the static production build pass.
+  - Backend: all 27 deterministic pytest tests pass in the locked container environment; the explicitly selected live OpenRouter test also passes independently.
+  - Browser: the container-backed Playwright workflow passes authentication plus every manual board mutation against the real FastAPI and SQLite boundaries, refreshing after each mutation to prove persistence.
+  - Container: the service is healthy at `http://localhost:8000`; manual board persistence remains intact and the authenticated live `/api/chat` smoke test returns the required model's response.
+  - Storage and security: browser board persistence is absent, generated data remains ignored, and the OpenRouter key is not present in image metadata/history, the runtime filesystem, static frontend output, or captured logs.
 
 ## Target request flow
 
@@ -433,30 +439,39 @@ Goal: prove the authenticated backend can call the required OpenRouter model wit
 
 ### Work checklist
 
-- [ ] Verify the current official OpenRouter request format before implementation.
-- [ ] Add a small backend OpenRouter client with `httpx2` and runtime `OPENROUTER_API_KEY` loading.
-- [ ] Use exactly `openai/gpt-oss-20b:free` and record the model in one backend configuration location.
-- [ ] Establish the authenticated `POST /api/chat` route with a simple message response before board operations are added.
-- [ ] Configure a finite request timeout and map missing-key, authentication, rate-limit, timeout, malformed-response, and upstream errors to concise API errors.
-- [ ] Keep request headers, API keys, and raw provider failures out of logs and browser responses.
-- [ ] Add deterministic mocked tests to the regular backend suite.
-- [ ] Add an explicitly marked live smoke test that asks `2+2` using the root `.env` key.
-- [ ] Do not make live network calls during ordinary offline tests.
+- [x] Verify the current official OpenRouter request format before implementation.
+- [x] Add a small backend OpenRouter client with `httpx2` and runtime `OPENROUTER_API_KEY` loading.
+- [x] Use exactly `openai/gpt-oss-20b:free` and record the model in one backend configuration location.
+- [x] Establish the authenticated `POST /api/chat` route with a simple message response before board operations are added.
+- [x] Configure a finite request timeout and map missing-key, authentication, rate-limit, timeout, malformed-response, and upstream errors to concise API errors.
+- [x] Keep request headers, API keys, and raw provider failures out of logs and browser responses.
+- [x] Add deterministic mocked tests to the regular backend suite.
+- [x] Add an explicitly marked live smoke test that asks `2+2` using the root `.env` key.
+- [x] Do not make live network calls during ordinary offline tests.
+
+### Part 8 verification record
+
+- The current contract was confirmed against the official OpenRouter quickstart, API reference, and model listing on 2026-08-17: bearer-authenticated `POST https://openrouter.ai/api/v1/chat/completions`, an OpenAI-compatible `messages` payload, and the exact available model slug `openai/gpt-oss-20b:free`.
+- The runtime client keeps the endpoint, model, and 45-second timeout in one backend module, loads `OPENROUTER_API_KEY` only at request time, and sends no optional attribution or browser-derived authentication headers.
+- Backend: all 27 deterministic tests passed with the live test deselected. Focused mocked coverage proves the exact URL, bearer header presence, model and message payload, parsed reply, missing configuration, provider authentication failure, rate limiting, timeout, provider 4xx/5xx, malformed JSON, missing response fields, route authentication, input trimming, and the concise response contract.
+- Live: the explicitly selected pytest smoke test passed independently against the real provider through authenticated FastAPI, asking `2+2` and receiving a response expressing `4`; 27 offline tests were deselected during that run.
+- Container: the rebuilt application is healthy at `http://localhost:8000`, packages `httpx2` in its runtime environment, and serves the authenticated live chat route without changing the frontend or board data.
+- Secret audit: the key value is absent from image configuration/history, the runtime filesystem, static frontend output, and container logs. Provider error bodies are not returned to the browser or included in application exceptions.
 
 ### Tests
 
-- [ ] Mock and assert the OpenRouter URL, authorization header presence, exact model, message payload, and parsed assistant response without snapshotting the key.
-- [ ] Test missing key, invalid key response, timeout, rate limit, provider 5xx, invalid JSON, and missing response fields.
-- [ ] Test unauthenticated access to `/api/chat`.
-- [ ] Run the live `2+2` smoke test and confirm a valid response expressing `4`.
-- [ ] Inspect the static frontend output, container history/configuration, and captured logs for accidental key exposure.
+- [x] Mock and assert the OpenRouter URL, authorization header presence, exact model, message payload, and parsed assistant response without snapshotting the key.
+- [x] Test missing key, invalid key response, timeout, rate limit, provider 5xx, invalid JSON, and missing response fields.
+- [x] Test unauthenticated access to `/api/chat`.
+- [x] Run the live `2+2` smoke test and confirm a valid response expressing `4`.
+- [x] Inspect the static frontend output, container history/configuration, and captured logs for accidental key exposure.
 
 ### Success criteria
 
-- [ ] The exact required model responds successfully through FastAPI in the live smoke test.
-- [ ] Regular tests remain deterministic and network-independent.
-- [ ] Provider problems return understandable errors without leaking secrets.
-- [ ] If the exact model is unavailable, the proven failure is reported for user direction rather than bypassed with another model.
+- [x] The exact required model responds successfully through FastAPI in the live smoke test.
+- [x] Regular tests remain deterministic and network-independent.
+- [x] Provider problems return understandable errors without leaking secrets.
+- [x] The exact model was available, so no substitution or user escalation was required.
 
 ## Part 9: Structured AI board operations
 

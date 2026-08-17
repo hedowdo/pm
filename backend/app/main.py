@@ -3,16 +3,17 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from secrets import compare_digest, token_urlsafe
-from typing import Annotated
+from typing import Annotated, Callable
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from app.database import BoardStoreError, initialize_database, load_board, replace_board
 from app.models import BoardState
+from app.openrouter import OpenRouterError, request_chat_completion
 
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -28,9 +29,30 @@ class LoginCredentials(BaseModel):
     password: str
 
 
+class ChatRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    message: str
+
+    @field_validator("message", mode="before")
+    @classmethod
+    def trim_message(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        message = value.strip()
+        if not message:
+            raise ValueError("Message cannot be blank")
+        return message
+
+
+class ChatResponse(BaseModel):
+    message: str
+
+
 def create_app(
     static_dir: Path = STATIC_DIR,
     database_path: Path = DATABASE_PATH,
+    chat_completion: Callable[[str], str] = request_chat_completion,
 ) -> FastAPI:
     sessions: dict[str, str] = {}
 
@@ -116,6 +138,16 @@ def create_app(
             return replace_board(database_path, username, board)
         except BoardStoreError:
             raise HTTPException(status_code=500, detail="Board could not be saved") from None
+
+    @application.post("/api/chat", response_model=ChatResponse)
+    def chat(request: ChatRequest, _username: CurrentUsername) -> ChatResponse:
+        try:
+            return ChatResponse(message=chat_completion(request.message))
+        except OpenRouterError as error:
+            raise HTTPException(
+                status_code=error.status_code,
+                detail=error.detail,
+            ) from None
 
     @application.api_route("/api", methods=API_METHODS, include_in_schema=False)
     @application.api_route("/api/{path:path}", methods=API_METHODS, include_in_schema=False)

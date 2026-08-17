@@ -5,12 +5,12 @@ description = "FastAPI backend for the project management MVP"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi==0.139.2",
+    "httpx2==2.9.0",
     "uvicorn==0.51.0",
 ]
 
 [dependency-groups]
 dev = [
-    "httpx2==2.9.0",
     "pytest==9.1.1",
 ]
 
@@ -19,5 +19,8 @@ package = false
 
 [tool.pytest.ini_options]
 addopts = "-q"
+markers = [
+    "live: calls the real OpenRouter API and requires explicit opt-in",
+]
 pythonpath = ["."]
 testpaths = ["tests"]
