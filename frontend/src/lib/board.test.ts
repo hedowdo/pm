@@ -1,9 +1,7 @@
 import {
-  BOARD_STORAGE_KEY,
   boardReducer,
   cardsForColumn,
   initialBoardState,
-  readSavedBoard,
 } from "./board";
 
 describe("boardReducer", () => {
@@ -17,14 +15,6 @@ describe("boardReducer", () => {
       "Done",
     ]);
     expect(initialBoardState.cards.length).toBeGreaterThan(0);
-  });
-
-  it("reads a valid saved board and safely ignores invalid saved data", () => {
-    const savedBoard = JSON.stringify(initialBoardState);
-
-    expect(readSavedBoard(savedBoard)).toEqual(initialBoardState);
-    expect(readSavedBoard("not-json")).toBeNull();
-    expect(BOARD_STORAGE_KEY).toBe("kanban-mvp.board.v1");
   });
 
   it("renames only the chosen column", () => {

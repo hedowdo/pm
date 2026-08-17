@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { initialBoardState } from "@/lib/board";
 import { AuthGate } from "./auth-gate";
 
 function jsonResponse(body: unknown, status = 200) {
@@ -13,7 +14,6 @@ describe("AuthGate", () => {
   const fetchMock = vi.fn<typeof fetch>();
 
   beforeEach(() => {
-    window.localStorage.clear();
     fetchMock.mockReset();
     vi.stubGlobal("fetch", fetchMock);
   });
@@ -23,7 +23,8 @@ describe("AuthGate", () => {
   it("checks the session and signs in before showing the board", async () => {
     fetchMock
       .mockResolvedValueOnce(jsonResponse({ detail: "Not authenticated" }, 401))
-      .mockResolvedValueOnce(jsonResponse({ username: "user" }));
+      .mockResolvedValueOnce(jsonResponse({ username: "user" }))
+      .mockResolvedValueOnce(jsonResponse(initialBoardState));
     const user = userEvent.setup();
 
     render(<AuthGate />);
@@ -34,7 +35,8 @@ describe("AuthGate", () => {
     await user.click(screen.getByRole("button", { name: "Sign in" }));
 
     expect(await screen.findByRole("region", { name: "Kanban board" })).toBeInTheDocument();
-    expect(fetchMock).toHaveBeenLastCalledWith(
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
       "/api/auth/login",
       expect.objectContaining({ method: "POST", credentials: "same-origin" }),
     );
@@ -59,6 +61,7 @@ describe("AuthGate", () => {
   it("renders an active session and returns to sign-in after logout", async () => {
     fetchMock
       .mockResolvedValueOnce(jsonResponse({ username: "user" }))
+      .mockResolvedValueOnce(jsonResponse(initialBoardState))
       .mockResolvedValueOnce(new Response(null, { status: 204 }));
     const user = userEvent.setup();
 

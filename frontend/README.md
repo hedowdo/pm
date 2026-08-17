@@ -1,6 +1,6 @@
 # Kanban MVP
 
-Single-board, statically exported Kanban demo with browser-local persistence.
+Single-board, statically exported Kanban app with authenticated SQLite persistence through FastAPI.
 
 ```bash
 npm install

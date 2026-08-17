@@ -29,13 +29,13 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useReducer, useState } from "react";
+import { BoardApiError, getBoard, saveBoard } from "@/lib/board-api";
 import {
-  BOARD_STORAGE_KEY,
   boardReducer,
   cardsForColumn,
-  initialBoardState,
-  readSavedBoard,
+  type BoardAction,
   type BoardColumn,
+  type BoardState,
   type ColumnId,
   type KanbanCard,
 } from "@/lib/board";
@@ -57,28 +57,95 @@ export function KanbanBoard({
   isLoggingOut = false,
   logoutError,
   onLogout,
+  onUnauthorized,
 }: {
   username?: string;
   isLoggingOut?: boolean;
   logoutError?: string | null;
   onLogout?: () => void;
+  onUnauthorized?: () => void;
 }) {
-  const [board, dispatch] = useReducer(boardReducer, initialBoardState);
+  const [loadState, setLoadState] = useState<
+    | { status: "loading" }
+    | { status: "error"; message: string }
+    | { status: "ready"; board: BoardState }
+  >({ status: "loading" });
+  const [loadAttempt, setLoadAttempt] = useState(0);
+
+  useEffect(() => {
+    let active = true;
+    getBoard()
+      .then((board) => {
+        if (active) setLoadState({ status: "ready", board });
+      })
+      .catch((error: unknown) => {
+        if (!active) return;
+        if (isUnauthorized(error)) {
+          onUnauthorized?.();
+          return;
+        }
+        setLoadState({
+          status: "error",
+          message: error instanceof Error ? error.message : "Unable to load your board.",
+        });
+      });
+    return () => {
+      active = false;
+    };
+  }, [loadAttempt, onUnauthorized]);
+
+  if (loadState.status === "loading") return <BoardLoading />;
+  if (loadState.status === "error") {
+    return (
+      <BoardLoadError
+        message={loadState.message}
+        isLoggingOut={isLoggingOut}
+        onRetry={() => {
+          setLoadState({ status: "loading" });
+          setLoadAttempt((attempt) => attempt + 1);
+        }}
+        onLogout={onLogout}
+      />
+    );
+  }
+
+  return (
+    <BoardWorkspace
+      initialBoard={loadState.board}
+      username={username}
+      isLoggingOut={isLoggingOut}
+      logoutError={logoutError}
+      onLogout={onLogout}
+      onUnauthorized={onUnauthorized}
+    />
+  );
+}
+
+function BoardWorkspace({
+  initialBoard,
+  username,
+  isLoggingOut = false,
+  logoutError,
+  onLogout,
+  onUnauthorized,
+}: {
+  initialBoard: BoardState;
+  username?: string;
+  isLoggingOut?: boolean;
+  logoutError?: string | null;
+  onLogout?: () => void;
+  onUnauthorized?: () => void;
+}) {
+  const [board, dispatch] = useReducer(boardReducer, initialBoard);
   const [editor, setEditor] = useState<Editor | null>(null);
   const [activeCardId, setActiveCardId] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [recoveryRequired, setRecoveryRequired] = useState(false);
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
-
-  useEffect(() => {
-    const savedBoard = readSavedBoard(window.localStorage.getItem(BOARD_STORAGE_KEY));
-    if (savedBoard) dispatch({ type: "replace", state: savedBoard });
-  }, []);
-
-  useEffect(() => {
-    window.localStorage.setItem(BOARD_STORAGE_KEY, JSON.stringify(board));
-  }, [board]);
 
   const editingCard =
     editor?.kind === "edit"
@@ -87,12 +154,13 @@ export function KanbanBoard({
   const activeCard = board.cards.find((card) => card.id === activeCardId);
 
   function handleDragStart({ active }: DragStartEvent) {
+    if (isSaving || recoveryRequired) return;
     setActiveCardId(String(active.id));
   }
 
   function handleDragEnd({ active, over }: DragEndEvent) {
-    if (over) {
-      dispatch({
+    if (over && !isSaving && !recoveryRequired) {
+      void applyAction({
         type: "moveCard",
         activeId: String(active.id),
         overId: String(over.id),
@@ -105,7 +173,7 @@ export function KanbanBoard({
     if (!editor) return;
 
     if (editor.kind === "create") {
-      dispatch({
+      void applyAction({
         type: "addCard",
         card: {
           id: crypto.randomUUID(),
@@ -115,7 +183,7 @@ export function KanbanBoard({
         },
       });
     } else {
-      dispatch({ type: "updateCard", cardId: editor.cardId, title, details });
+      void applyAction({ type: "updateCard", cardId: editor.cardId, title, details });
     }
 
     setEditor(null);
@@ -123,9 +191,64 @@ export function KanbanBoard({
 
   function deleteEditingCard() {
     if (editor?.kind !== "edit") return;
-    dispatch({ type: "deleteCard", cardId: editor.cardId });
+    void applyAction({ type: "deleteCard", cardId: editor.cardId });
     setEditor(null);
   }
+
+  async function applyAction(action: BoardAction) {
+    if (isSaving || recoveryRequired) return;
+    const previousBoard = board;
+    const nextBoard = boardReducer(board, action);
+    dispatch({ type: "replace", state: nextBoard });
+    setSaveError(null);
+    setIsSaving(true);
+
+    try {
+      const authoritative = await saveBoard(nextBoard);
+      dispatch({ type: "replace", state: authoritative });
+    } catch (error) {
+      if (isUnauthorized(error)) {
+        onUnauthorized?.();
+        return;
+      }
+
+      try {
+        const authoritative = await getBoard();
+        dispatch({ type: "replace", state: authoritative });
+        setSaveError("That change was not saved. The latest board was restored.");
+      } catch (reloadError) {
+        if (isUnauthorized(reloadError)) {
+          onUnauthorized?.();
+          return;
+        }
+        dispatch({ type: "replace", state: previousBoard });
+        setRecoveryRequired(true);
+        setSaveError("Unable to confirm the save. Retry before making more changes.");
+      }
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  async function retryRecovery() {
+    setIsSaving(true);
+    try {
+      const authoritative = await getBoard();
+      dispatch({ type: "replace", state: authoritative });
+      setRecoveryRequired(false);
+      setSaveError(null);
+    } catch (error) {
+      if (isUnauthorized(error)) {
+        onUnauthorized?.();
+        return;
+      }
+      setSaveError("Unable to reload the board. Please try again.");
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  const interactionsDisabled = isSaving || recoveryRequired;
 
   return (
     <main className="min-h-screen px-5 py-6 sm:px-8 lg:px-12 lg:py-10">
@@ -147,7 +270,7 @@ export function KanbanBoard({
               </p>
               <button
                 type="button"
-                disabled={isLoggingOut}
+                disabled={isLoggingOut || isSaving}
                 onClick={onLogout}
                 className="flex items-center gap-2 rounded-xl border border-[#032147]/15 bg-white/70 px-4 py-2.5 text-sm font-bold text-[#032147] transition hover:border-[#753991] hover:text-[#753991] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#753991] disabled:cursor-wait disabled:opacity-60"
               >
@@ -158,6 +281,28 @@ export function KanbanBoard({
                 <p role="alert" className="text-sm font-semibold text-[#a53b2a]">
                   {logoutError}
                 </p>
+              )}
+              {isSaving && (
+                <p role="status" className="text-sm font-semibold text-[#209dd7]">
+                  Saving...
+                </p>
+              )}
+              {saveError && (
+                <div className="flex flex-col items-start gap-2 sm:items-end">
+                  <p role="alert" className="text-sm font-semibold text-[#a53b2a]">
+                    {saveError}
+                  </p>
+                  {recoveryRequired && (
+                    <button
+                      type="button"
+                      disabled={isSaving}
+                      onClick={() => void retryRecovery()}
+                      className="rounded-lg px-3 py-1.5 text-sm font-bold text-[#753991] hover:bg-[#753991]/8 focus-visible:outline-2 focus-visible:outline-[#753991] disabled:opacity-60"
+                    >
+                      Retry board load
+                    </button>
+                  )}
+                </div>
               )}
             </div>
           )}
@@ -181,8 +326,9 @@ export function KanbanBoard({
                   column={column}
                   cards={cardsForColumn(board.cards, column.id)}
                   accentClass={columnAccents[index]}
+                  disabled={interactionsDisabled}
                   onRename={(title) =>
-                    dispatch({ type: "renameColumn", columnId: column.id, title })
+                    void applyAction({ type: "renameColumn", columnId: column.id, title })
                   }
                   onCreate={() => setEditor({ kind: "create", columnId: column.id })}
                   onEdit={(cardId) => setEditor({ kind: "edit", cardId })}
@@ -214,10 +360,70 @@ export function KanbanBoard({
   );
 }
 
+function BoardLoading() {
+  return (
+    <main className="flex min-h-screen items-center justify-center px-5 py-10">
+      <div className="w-full max-w-md rounded-[1.75rem] border border-[#032147]/10 bg-white/75 p-8 text-center shadow-[0_18px_45px_rgba(3,33,71,0.08)] backdrop-blur-sm">
+        <span className="mx-auto mb-5 block h-3 w-3 animate-pulse rounded-full bg-[#209dd7] shadow-[0_0_0_7px_rgba(32,157,215,0.14)]" />
+        <p role="status" className="font-bold text-[#032147]">
+          Loading your board...
+        </p>
+      </div>
+    </main>
+  );
+}
+
+function BoardLoadError({
+  message,
+  isLoggingOut,
+  onRetry,
+  onLogout,
+}: {
+  message: string;
+  isLoggingOut: boolean;
+  onRetry: () => void;
+  onLogout?: () => void;
+}) {
+  return (
+    <main className="flex min-h-screen items-center justify-center px-5 py-10">
+      <section className="w-full max-w-md rounded-[1.75rem] border border-[#032147]/10 bg-white/80 p-8 text-center shadow-[0_18px_45px_rgba(3,33,71,0.08)]">
+        <h1 className="editorial-title text-3xl font-bold text-[#032147]">Board unavailable</h1>
+        <p role="alert" className="mt-3 text-sm leading-6 text-[#888888]">
+          {message}
+        </p>
+        <div className="mt-6 flex justify-center gap-3">
+          <button
+            type="button"
+            onClick={onRetry}
+            className="rounded-xl bg-[#753991] px-5 py-3 text-sm font-bold text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#753991]"
+          >
+            Retry
+          </button>
+          {onLogout && (
+            <button
+              type="button"
+              disabled={isLoggingOut}
+              onClick={onLogout}
+              className="rounded-xl border border-[#032147]/15 px-5 py-3 text-sm font-bold text-[#032147] disabled:opacity-60"
+            >
+              {isLoggingOut ? "Signing out..." : "Sign out"}
+            </button>
+          )}
+        </div>
+      </section>
+    </main>
+  );
+}
+
+function isUnauthorized(error: unknown): boolean {
+  return error instanceof BoardApiError && error.status === 401;
+}
+
 function KanbanColumn({
   column,
   cards,
   accentClass,
+  disabled,
   onRename,
   onCreate,
   onEdit,
@@ -225,6 +431,7 @@ function KanbanColumn({
   column: BoardColumn;
   cards: KanbanCard[];
   accentClass: string;
+  disabled: boolean;
   onRename: (title: string) => void;
   onCreate: () => void;
   onEdit: (cardId: string) => void;
@@ -262,6 +469,7 @@ function KanbanColumn({
               <input
                 aria-label="Column name"
                 autoFocus
+                disabled={disabled}
                 value={title}
                 onChange={(event) => setTitle(event.target.value)}
                 onKeyDown={(event) => {
@@ -281,6 +489,7 @@ function KanbanColumn({
           </div>
           <button
             type="button"
+            disabled={disabled}
             aria-label={isRenaming ? `Save ${column.title}` : `Rename ${column.title}`}
             onPointerDown={(event) => {
               event.preventDefault();
@@ -292,7 +501,7 @@ function KanbanColumn({
                 toggleRename();
               }
             }}
-            className="rounded-lg p-1 text-white/65 transition hover:bg-white/12 hover:text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+            className="rounded-lg p-1 text-white/65 transition hover:bg-white/12 hover:text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white disabled:cursor-wait disabled:opacity-45"
           >
             {isRenaming ? <Check size={16} strokeWidth={2.8} /> : <Pencil size={15} strokeWidth={2.4} />}
           </button>
@@ -314,7 +523,12 @@ function KanbanColumn({
           strategy={verticalListSortingStrategy}
         >
           {cards.map((card) => (
-            <KanbanCard key={card.id} card={card} onClick={() => onEdit(card.id)} />
+            <KanbanCard
+              key={card.id}
+              card={card}
+              disabled={disabled}
+              onClick={() => onEdit(card.id)}
+            />
           ))}
         </SortableContext>
         {cards.length === 0 && (
@@ -326,9 +540,10 @@ function KanbanColumn({
 
       <button
         type="button"
+        disabled={disabled}
         aria-label={`Add card to ${column.title}`}
         onClick={onCreate}
-        className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-[#032147]/20 px-3 py-3 text-sm font-bold text-[#032147] transition hover:border-[#753991] hover:bg-[#753991] hover:text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#753991]"
+        className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-[#032147]/20 px-3 py-3 text-sm font-bold text-[#032147] transition hover:border-[#753991] hover:bg-[#753991] hover:text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#753991] disabled:cursor-wait disabled:opacity-45"
       >
         <Plus size={16} strokeWidth={2.5} />
         Add card
@@ -337,7 +552,15 @@ function KanbanColumn({
   );
 }
 
-function KanbanCard({ card, onClick }: { card: KanbanCard; onClick: () => void }) {
+function KanbanCard({
+  card,
+  disabled,
+  onClick,
+}: {
+  card: KanbanCard;
+  disabled: boolean;
+  onClick: () => void;
+}) {
   const {
     attributes,
     isDragging,
@@ -351,7 +574,7 @@ function KanbanCard({ card, onClick }: { card: KanbanCard; onClick: () => void }
     <article
       ref={setNodeRef}
       data-testid="kanban-card"
-      onClick={onClick}
+      onClick={() => !disabled && onClick()}
       style={{
         transform: CSS.Transform.toString(transform),
         transition,
@@ -367,6 +590,7 @@ function KanbanCard({ card, onClick }: { card: KanbanCard; onClick: () => void }
         </h3>
         <button
           type="button"
+          disabled={disabled}
           aria-label={`Drag ${card.title}`}
           onClick={(event) => event.stopPropagation()}
           className="-mr-1 -mt-1 cursor-grab touch-none rounded-md p-1 text-[#888888] opacity-0 transition hover:bg-[#032147]/6 hover:text-[#032147] active:cursor-grabbing group-hover:opacity-100 focus:opacity-100 focus-visible:outline-2 focus-visible:outline-[#209dd7]"

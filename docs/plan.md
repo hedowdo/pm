@@ -1,6 +1,6 @@
 # Project Management MVP Implementation Plan
 
-Status: Part 6 complete and verified; Part 7 has not started  
+Status: Part 7 complete and verified; Part 8 has not started  
 Last updated: 2026-08-15
 
 ## Plan rules
@@ -63,7 +63,7 @@ Excluded:
 - Docker Desktop 4.85.0 is installed with Docker Engine 29.6.2 and Docker Compose 5.3.1; the Part 2 image, container, scripts, persistence, and secret-isolation checks pass.
 - `.env` is ignored and contains the expected OpenRouter variable name. Its value must remain private.
 - The frontend is Next.js 16.3.1 with the App Router, React 19.2.8, strict TypeScript, Tailwind CSS 4, dnd-kit, Radix Dialog, Lucide, Vitest, Testing Library, and Playwright.
-- The current board uses a reducer and browser `localStorage`. SQLite replaces `localStorage` as the board source of truth in Part 7.
+- The frontend board uses its reducer for interaction state and FastAPI/SQLite as the only durable source of truth; Part 7 removed browser board persistence.
 - Existing frontend verification on 2026-08-14:
   - `npm.cmd test`: 10 tests passed.
   - `npm.cmd run lint`: passed.
@@ -391,33 +391,41 @@ Goal: replace browser-local board persistence with the authenticated whole-board
 
 ### Work checklist
 
-- [ ] Add a small typed same-origin API client using relative `/api` URLs.
-- [ ] Load the board from `GET /api/board` only after authentication succeeds.
-- [ ] Render explicit initial-loading, saving, unauthorized, and recoverable-error states.
-- [ ] For each reducer action, send the resulting complete `BoardState` to `PUT /api/board`.
-- [ ] Reconcile each success with the authoritative board returned by the backend.
-- [ ] Restore or refetch the authoritative board after a failed optimistic interaction; never overwrite it with stale browser state.
-- [ ] Allow only one board save at a time so an older response cannot replace newer local state.
-- [ ] Remove board reads and writes from `localStorage` and remove the temporary storage test shim where no longer needed.
-- [ ] Preserve fixed column IDs, card ordering, dialog behavior, drag-and-drop, accessible names, and the established visual design.
-- [ ] Keep logout separate from board deletion.
+- [x] Add a small typed same-origin API client using relative `/api` URLs.
+- [x] Load the board from `GET /api/board` only after authentication succeeds.
+- [x] Render explicit initial-loading, saving, unauthorized, and recoverable-error states.
+- [x] For each reducer action, send the resulting complete `BoardState` to `PUT /api/board`.
+- [x] Reconcile each success with the authoritative board returned by the backend.
+- [x] Restore or refetch the authoritative board after a failed optimistic interaction; never overwrite it with stale browser state.
+- [x] Allow only one board save at a time so an older response cannot replace newer local state.
+- [x] Remove board reads and writes from `localStorage` and remove the temporary storage test shim where no longer needed.
+- [x] Preserve fixed column IDs, card ordering, dialog behavior, drag-and-drop, accessible names, and the established visual design.
+- [x] Keep logout separate from board deletion.
+
+### Part 7 verification record
+
+- API client and components: all 17 Vitest tests passed. Focused coverage proves relative GET/PUT calls and complete payloads, error mapping, authenticated initial load, loading/saving/error states, every UI mutation save, authoritative response reconciliation, one-save-at-a-time behavior, failed-save refetch, retry, and expired-session handling.
+- Regression: all 13 backend tests passed, frontend lint passed, TypeScript passed, and the static production build completed successfully.
+- Browser: the single container-backed Playwright workflow used the real board API for rename, create, edit, cross-column move, same-column reorder, and delete. It waited for each PUT and refreshed after every mutation before asserting persistence, then restored the original board.
+- Browser storage: product source contains no `localStorage`, board storage key, or saved-board parser. The browser test confirmed `kanban-mvp.board.v1` is absent.
+- Container persistence: a browser-made rename survived complete container removal and recreation through SQLite, the expired in-memory session required a new login, and the persisted edit reappeared. The original `Ideas` title was restored afterward; the final container is healthy and browser logs are clean.
 
 ### Tests
 
-- [ ] Unit-test the API client `GET`/`PUT` paths, methods, complete-state payloads, responses, and error mapping.
-- [ ] Component-test initial load, every reducer-backed save, one-save-at-a-time behavior, failed load, failed save, unauthorized response, and server reconciliation.
-- [ ] Run the full backend suite and frontend lint/build/unit suite.
-- [ ] Browser-test login followed by rename, card create/edit/delete, cross-column movement, and same-column reorder against the real backend.
-- [ ] Refresh after every mutation type and prove the new state remains.
-- [ ] Stop and recreate the container without deleting `data/`, sign in again, and prove all edits remain.
-- [ ] Confirm board state is no longer stored under `kanban-mvp.board.v1` or any replacement browser-storage key.
+- [x] Unit-test the API client `GET`/`PUT` paths, methods, complete-state payloads, responses, and error mapping.
+- [x] Component-test initial load, every reducer-backed save, one-save-at-a-time behavior, failed load, failed save, unauthorized response, and server reconciliation.
+- [x] Run the full backend suite and frontend lint/build/unit suite.
+- [x] Browser-test login followed by rename, card create/edit/delete, cross-column movement, and same-column reorder against the real backend.
+- [x] Refresh after every mutation type and prove the new state remains.
+- [x] Stop and recreate the container without deleting `data/`, sign in again, and prove all edits remain.
+- [x] Confirm board state is no longer stored under `kanban-mvp.board.v1` or any replacement browser-storage key.
 
 ### Success criteria
 
-- [ ] SQLite is the only durable board source of truth.
-- [ ] Every manual edit survives browser refresh and container recreation.
-- [ ] Overlapping saves are prevented and failed requests cannot silently replace correct server state.
-- [ ] Existing board interactions and appearance remain functional.
+- [x] SQLite is the only durable board source of truth.
+- [x] Every manual edit survives browser refresh and container recreation.
+- [x] Overlapping saves are prevented and failed requests cannot silently replace correct server state.
+- [x] Existing board interactions and appearance remain functional.
 
 ## Part 8: OpenRouter connectivity
 

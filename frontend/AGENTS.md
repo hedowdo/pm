@@ -10,7 +10,7 @@ This version has breaking changes - APIs, conventions, and file structure may di
 
 These instructions apply to the frontend demo in `frontend/`. Part 2 of `../docs/plan.md` renamed it from `front end/`, and Part 3 configured its static export for the FastAPI container; do not create a second competing frontend directory.
 
-The current app is a single-board, client-rendered Kanban app protected by the Part 4 FastAPI session flow. The complete board is still persisted in browser `localStorage` under `kanban-mvp.board.v1`; it is not purely in memory. `readSavedBoard` only checks that parsed `columns` and `cards` are arrays, so it is not full schema validation. Part 7 replaces that browser persistence with FastAPI and SQLite.
+The current app is a single-board, client-rendered Kanban app protected by the FastAPI session flow. Part 7 made FastAPI and SQLite the only durable board source: the frontend loads from `GET /api/board` and saves complete states through `PUT /api/board`. Board state is no longer read from or written to browser storage.
 
 Keep changes small, follow the root `AGENTS.md`, and add no feature outside the approved plan. Use no emojis in code, UI copy, tests, or documentation.
 
@@ -34,18 +34,21 @@ Before using or changing a Next.js API, consult the matching local documentation
 - `src/app/globals.css`: Tailwind import, palette variables, global typography, page background, and scrollbar styling.
 - `src/components/auth-gate.tsx`: initial session check, sign-in form, authenticated board gate, and logout state.
 - `src/components/kanban-board.tsx`: all current UI and interaction components:
-  - `KanbanBoard`: reducer state, browser persistence, drag sensors, active drag state, and editor state.
+  - `KanbanBoard`: authenticated initial load plus loading and recoverable-error states.
+  - `BoardWorkspace`: reducer state, serialized authoritative saves, recovery, drag sensors, active drag state, and editor state.
   - `KanbanColumn`: fixed column UI, rename behavior, drop target, card count, and create action.
   - `KanbanCard`: sortable card and grip-only drag handle.
   - `DraggedCardPreview`: drag overlay.
   - `CardEditorDialog` and `CardEditorForm`: create/edit form, validation, and confirmed deletion.
-- `src/lib/board.ts`: board types, seed data, storage parser, reducer, filtering, and move/order logic.
+- `src/lib/board.ts`: board types, seed fixture, reducer, filtering, and move/order logic.
 - `src/lib/auth.ts`: typed same-origin calls for login, session lookup, and logout.
+- `src/lib/board-api.ts`: typed same-origin board load/save calls and status-aware errors.
 - `src/lib/board.test.ts`: pure state and ordering tests.
+- `src/lib/board-api.test.ts`: board API paths, payloads, responses, and error mapping.
 - `src/components/auth-gate.test.tsx`: focused loading, login failure/success, active-session, and logout coverage.
-- `src/components/kanban-board.test.tsx`: rendered interaction and storage tests.
-- `src/test/setup.ts`: jest-dom plus the current Map-backed `localStorage` test double.
-- `e2e/board.spec.ts`: one container-capable auth lifecycle plus rename, card CRUD, cross-column pointer drag, same-column keyboard reorder, and logout-persistence workflow.
+- `src/components/kanban-board.test.tsx`: authoritative load, mutation saves, reconciliation, serialization, recovery, and unauthorized-state coverage.
+- `src/test/setup.ts`: jest-dom test setup.
+- `e2e/board.spec.ts`: one container-capable authenticated SQLite workflow with refresh checks after rename, card CRUD, cross-column pointer drag, and same-column keyboard reorder.
 - `next.config.ts`, `vitest.config.ts`, and `playwright.config.ts`: framework and test configuration.
 
 Keep pure board transformations out of JSX when practical. Do not split the current compact component merely to create abstraction; extract only when integration produces a clear reusable boundary, such as a typed API client.
@@ -100,8 +103,9 @@ Do not add column creation, deletion, or reordering. The AI MVP may create, edit
 - Render the board only after `GET /api/auth/me` confirms the session. Keep the hardcoded credential pair and comparison logic out of frontend source and bundles.
 - Do not add Next.js API routes, request-dependent route handlers, server actions, proxy rules, runtime cookies, or other features that require a Node server.
 - The browser must never receive `OPENROUTER_API_KEY` or call OpenRouter directly.
-- Until Part 7, preserve the existing `localStorage` demo behavior. In Part 7 remove it completely so stale browser state cannot overwrite SQLite.
-- After Part 7, every mutation uses the backend and replaces/reconciles with the authoritative board returned by the API.
+- Every board mutation sends the resulting complete state to the backend and replaces/reconciles with the authoritative response.
+- Permit only one board save at a time. After an uncertain failure, refetch before enabling more edits so stale local state cannot overwrite SQLite.
+- Do not add board persistence to `localStorage`, `sessionStorage`, cookies, or another browser store.
 - AI chat history alone uses `sessionStorage` in Part 10 and is cleared on logout. Board state never uses `sessionStorage`.
 
 ## Commands and verification
@@ -125,13 +129,14 @@ Required verification depends on the change:
 - Drag-and-drop, routing, auth, persistence, or chat workflow: Playwright plus the relevant lower-level tests.
 - Configuration or static-serving change: lint, unit tests, `next build`, and container/static-asset smoke tests.
 
-Verification observed on 2026-08-15 after Part 4:
+Verification observed on 2026-08-16 after Part 7:
 
 - Lint passed.
-- All 13 Vitest tests passed.
-- All 7 FastAPI tests passed in the locked Python container environment.
+- All 17 Vitest tests passed.
+- All 13 FastAPI tests passed in the locked Python container environment.
 - The Part 3 production build uses `output: "export"` and writes the static site to `out/`.
-- The container-backed Playwright workflow passed authentication, refresh, board editing and drag behavior, logout, and board-persistence checks. Setting `PLAYWRIGHT_BASE_URL` skips the local Next.js development server, so the earlier development-server memory failure did not reproduce.
+- The container-backed Playwright workflow passed real backend saves and a refresh after every mutation type, then restored the original board. The legacy board-storage key remained absent.
+- A browser-made edit survived full container recreation and a new login, then the original board was restored. The container remained healthy with no browser warnings or errors.
 - Same-column browser coverage uses the supported keyboard sensor to move the current second card above the first, which proves a real order change under the reducer's insert-before rule.
 
 ## Generated files and hygiene

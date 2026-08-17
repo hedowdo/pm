@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { KanbanBoard } from "@/components/kanban-board";
 import {
   getSession,
@@ -64,6 +64,11 @@ export function AuthGate() {
     }
   }
 
+  const handleUnauthorized = useCallback(() => {
+    setError("Your session expired. Sign in again.");
+    setAuth({ status: "signed-out" });
+  }, []);
+
   if (auth.status === "loading") return <SessionLoading />;
   if (auth.status === "signed-out") {
     return <SignInForm error={error} isPending={isPending} onSubmit={handleLogin} />;
@@ -75,6 +80,7 @@ export function AuthGate() {
       isLoggingOut={isPending}
       logoutError={error}
       onLogout={handleLogout}
+      onUnauthorized={handleUnauthorized}
     />
   );
 }

@@ -17,8 +17,6 @@ export type BoardState = {
   cards: KanbanCard[];
 };
 
-export const BOARD_STORAGE_KEY = "kanban-mvp.board.v1";
-
 export type BoardAction =
   | { type: "renameColumn"; columnId: ColumnId; title: string }
   | { type: "addCard"; card: KanbanCard }
@@ -89,19 +87,6 @@ export const initialBoardState: BoardState = {
 
 export function cardsForColumn(cards: KanbanCard[], columnId: ColumnId) {
   return cards.filter((card) => card.columnId === columnId);
-}
-
-export function readSavedBoard(savedValue: string | null): BoardState | null {
-  if (!savedValue) return null;
-
-  try {
-    const savedBoard = JSON.parse(savedValue) as BoardState;
-    return Array.isArray(savedBoard.columns) && Array.isArray(savedBoard.cards)
-      ? savedBoard
-      : null;
-  } catch {
-    return null;
-  }
 }
 
 export function boardReducer(state: BoardState, action: BoardAction): BoardState {
